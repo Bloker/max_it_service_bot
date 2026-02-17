@@ -13,6 +13,6 @@ ENV/
 .idea/
 
 #dotenv
-.env
+config/.env
 
-main.py
+test_main.py
