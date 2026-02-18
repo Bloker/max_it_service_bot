@@ -34,7 +34,7 @@ def get_config() -> AppConfig:
         raise RuntimeError("ID группового чата не найден! Установите MAX_GROUP_CHAT_ID в .env")
 
     try:
-        group_chat_id = str(group_chat_id_raw)
+        group_chat_id = int(group_chat_id_raw)
     except ValueError:
         raise RuntimeError("MAX_GROUP_CHAT_ID должен быть числом (chat_id)")
 
