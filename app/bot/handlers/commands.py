@@ -2,7 +2,7 @@ from maxapi import Router
 from maxapi.types import MessageCreated, Command
 
 
-def register(dp, bot):
+def register(dp):
     @dp.message_created(Command("start"))
     async def cmd_start(event: MessageCreated):
         user = event.message.sender

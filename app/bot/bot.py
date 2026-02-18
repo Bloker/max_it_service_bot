@@ -8,9 +8,10 @@ from app.bot.handlers import routes
 logger = logging.getLogger(__name__)
 
 
-def register_routes(dp: Dispatcher, bot: Bot) -> None:
+def register_routes(dp: Dispatcher) -> None:
     for reg in routes:
-        reg(dp, bot)
+        reg(dp)
+
 
 
 async def main() -> None:
@@ -19,7 +20,7 @@ async def main() -> None:
     bot = Bot(token=cfg.bot.token)
     dp = Dispatcher()
 
-    register_routes(dp, bot)
+    register_routes(dp)
 
     logger.info("Бот запускается...")
 
