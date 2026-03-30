@@ -1,9 +1,9 @@
-import logging
+﻿import logging
 
 from maxapi import Bot, Dispatcher
 
-from config.config import get_config
 from app.bot.handlers import routes
+from config.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 def register_routes(dp: Dispatcher) -> None:
     for reg in routes:
         reg(dp)
-
 
 
 async def main() -> None:
@@ -26,8 +25,8 @@ async def main() -> None:
 
     try:
         await bot.delete_webhook()
-    except Exception as e:
-        logger.warning("Ошибка удаления webhook: %s", e)
+    except Exception as exc:
+        logger.warning("Ошибка удаления webhook: %s", exc)
 
     logger.info("Бот запущен и ожидает сообщений")
     await dp.start_polling(bot)
