@@ -22,7 +22,7 @@ def register(dp) -> None:
         if not text:
             return
 
-        actor_id = event.message.sender.user_id
+        actor_id = int(event.message.sender.user_id)
         is_allowed = can_use_network_tools(
             user_id=actor_id,
             admin_ids=cfg.bot.admin_ids,

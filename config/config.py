@@ -17,6 +17,8 @@ class LogsConfig:
 class BotConfig:
     token: str
     group_chat_id: int
+    user_ids: tuple[int, ...]
+    user_registry_path: str
     admin_ids: tuple[int, ...]
     it_specialist_ids: tuple[int, ...]
 
@@ -128,6 +130,13 @@ def get_config() -> AppConfig:
     )
 
     admin_ids = _parse_int_tuple_csv(os.getenv("MAX_ADMIN_IDS", ""), "MAX_ADMIN_IDS")
+    user_ids = _parse_int_tuple_csv(os.getenv("MAX_USER_IDS", ""), "MAX_USER_IDS")
+    user_registry_path = os.getenv(
+        "MAX_USER_REGISTRY_PATH",
+        "data/user_access_registry.json",
+    ).strip()
+    if not user_registry_path:
+        raise RuntimeError("MAX_USER_REGISTRY_PATH must not be empty")
     it_specialist_ids = _parse_int_tuple_csv(
         os.getenv("MAX_IT_SPECIALIST_IDS", ""),
         "MAX_IT_SPECIALIST_IDS",
@@ -184,6 +193,8 @@ def get_config() -> AppConfig:
         bot=BotConfig(
             token=token,
             group_chat_id=group_chat_id,
+            user_ids=user_ids,
+            user_registry_path=user_registry_path,
             admin_ids=admin_ids,
             it_specialist_ids=it_specialist_ids,
         ),

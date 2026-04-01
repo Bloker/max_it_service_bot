@@ -2,13 +2,22 @@
 
 from maxapi.types import MessageCallback
 
+from app.admin.runtime import get_user_access_registry
 from app.admin.services.access_service import (
     can_change_ticket_status,
     can_take_ticket,
+    can_use_network_tools,
+    can_view_service_functions,
     can_view_user_menu,
+    is_admin,
 )
 from app.common.user_helpers import get_full_name
 from app.helpdesk.keyboards.helpdesk_keyboards import (
+    build_admin_menu_keyboard,
+    build_admin_request_keyboard,
+    build_admin_role_select_keyboard,
+    build_admin_user_actions_keyboard,
+    build_admin_users_keyboard,
     build_categories_keyboard,
     build_confirm_keyboard,
     build_main_menu_keyboard,
@@ -22,6 +31,9 @@ from app.helpdesk.runtime import (
 )
 from app.helpdesk.services.menu_service import get_ticket_categories
 from app.helpdesk.texts import specialist_texts, user_texts
+from app.network.keyboards.network_keyboards import build_network_menu_keyboard
+from app.network.runtime import get_network_session_service
+from app.network.texts import network_texts
 from config.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -33,29 +45,451 @@ def _build_user_ticket_list_text(lines: list[str]) -> str:
     return f"{user_texts.MY_TICKETS_HEADER}\n" + "\n".join(lines)
 
 
+def _build_single_pending_text(item) -> str:
+    requested_at = str(item.requested_at or "")
+    requested_at = requested_at.replace("T", " ")
+    requested_at = requested_at.split("+", maxsplit=1)[0]
+    requested_at = requested_at.split(".", maxsplit=1)[0]
+    return (
+        "Новая заявка на доступ:\n"
+        f"ID: {item.user_id}\n"
+        f"Имя: {item.user_name}\n"
+        f"Телефон: {item.phone or '-'}\n"
+        f"Дата: {requested_at}"
+    )
+
+
+def _find_pending_item(access_registry, user_id: int):
+    for item in access_registry.list_pending():
+        if item.user_id == user_id:
+            return item
+    return None
+
+
+def _build_users_text(users) -> str:
+    if not users:
+        return "Пользователей в базе нет."
+    lines = ["Список пользователей:"]
+    for idx, item in enumerate(users):
+        lines.append(f"{item.user_id} | {item.user_name}")
+        if idx < len(users) - 1:
+            lines.append("")
+    return "\n".join(lines)
+
+
+def _build_user_card_text(item) -> str:
+    lines = [
+        "Пользователь:",
+        f"ID: {item.user_id}",
+        f"Имя: {item.user_name}",
+        f"Телефон: {item.phone or '-'}",
+        f"Роль: {item.role}",
+        f"Статус: {item.status}",
+    ]
+    return "\n".join(lines)
+
+
+def _find_user_item(access_registry, user_id: int):
+    for item in access_registry.list_users():
+        if item.user_id == user_id:
+            return item
+    return None
+
+
+def _resolve_role_sets(cfg, access_registry):
+    admin_ids = set(cfg.bot.admin_ids) | set(access_registry.get_ids_by_role("admin"))
+    specialist_ids = set(cfg.bot.it_specialist_ids) | set(
+        access_registry.get_ids_by_role("IT specialist")
+    )
+    user_ids = set(cfg.bot.user_ids) | set(access_registry.get_ids_by_role("user"))
+    return tuple(admin_ids), tuple(specialist_ids), tuple(user_ids)
+
+
+def _build_menu_for_user(user_id: int, cfg, access_registry):
+    admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
+    return build_main_menu_keyboard(
+        can_use_network_tools=can_use_network_tools(
+            user_id=user_id,
+            admin_ids=admin_ids,
+            specialist_ids=specialist_ids,
+        ),
+        can_view_service_functions=can_view_service_functions(
+            user_id=user_id,
+            admin_ids=admin_ids,
+            specialist_ids=specialist_ids,
+        ),
+        is_admin=is_admin(user_id, admin_ids),
+    )
+
+
+def _has_user_access(
+    user_id: int,
+    cfg,
+    approved_user_ids: tuple[int, ...],
+    banned_user_ids: tuple[int, ...],
+    access_registry,
+) -> bool:
+    if user_id in set(banned_user_ids):
+        return False
+    admin_ids, specialist_ids, user_ids = _resolve_role_sets(cfg, access_registry)
+    return can_view_user_menu(
+        user_id=user_id,
+        admin_ids=admin_ids,
+        specialist_ids=specialist_ids,
+        user_ids=user_ids,
+        approved_user_ids=approved_user_ids,
+    )
+
+
 def register(dp) -> None:
     cfg = get_config()
     categories = get_ticket_categories()
     user_flow = get_user_flow_service()
     tickets = get_ticket_service()
     ticket_links = get_ticket_link_service()
+    network_session = get_network_session_service()
+    access_registry = get_user_access_registry()
+
+    async def _safe_answer(event: MessageCallback, notification: str) -> None:
+        try:
+            await event.answer(notification=notification)
+        except Exception:
+            logger.exception("Failed to send callback answer: notification=%s", notification)
+
+    async def _replace_callback_message(event: MessageCallback, text: str, attachment) -> None:
+        bot = event._ensure_bot()
+        chat_id = int(event.message.recipient.chat_id)
+        sent = await bot.send_message(chat_id=chat_id, text=text, attachments=[attachment])
+        old_mid = getattr(getattr(event.message, "body", None), "mid", None)
+        new_mid = getattr(getattr(getattr(sent, "message", None), "body", None), "mid", None)
+        if old_mid and new_mid and str(old_mid) != str(new_mid):
+            try:
+                await bot.delete_message(message_id=old_mid)
+            except Exception:
+                pass
 
     @dp.message_callback(UserMenuPayload.filter())
     async def handle_user_menu_callback(event: MessageCallback, payload: UserMenuPayload):
-        user_id = event.callback.user.user_id
+        if event.message.recipient.chat_type != "dialog":
+            await event.answer(notification="Меню доступно только в личном чате с ботом")
+            return
+
+        user_id = int(event.callback.user.user_id)
         action = payload.action
-        if not can_view_user_menu(user_id):
+        logger.info("User callback received: user_id=%s action=%s", user_id, action)
+        admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
+        approved_user_ids = access_registry.get_approved_ids()
+        banned_user_ids = access_registry.get_banned_ids()
+        if not _has_user_access(
+            user_id,
+            cfg,
+            approved_user_ids,
+            banned_user_ids,
+            access_registry,
+        ):
             logger.info("User menu denied for user_id=%s", user_id)
             await event.answer(notification="Доступ ограничен")
             return
 
         if action == "menu":
             user_flow.reset(user_id)
+            network_session.reset(user_id)
             await event.message.answer(
                 text=user_texts.WELCOME_TEXT,
-                attachments=[build_main_menu_keyboard()],
+                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
             )
             await event.answer(notification="Главное меню")
+            return
+
+        if action == "network":
+            is_allowed = can_use_network_tools(
+                user_id=user_id,
+                admin_ids=admin_ids,
+                specialist_ids=specialist_ids,
+            )
+            if not is_allowed:
+                await event.answer(notification=network_texts.NO_ACCESS_TEXT)
+                return
+
+            network_session.reset(user_id)
+            await event.message.answer(
+                text=network_texts.NETWORK_MENU_TEXT,
+                attachments=[build_network_menu_keyboard()],
+            )
+            await event.answer(notification="Сетевое меню")
+            return
+
+        if action == "service_help":
+            await event.message.answer(
+                text=(
+                    "Сервисные команды для группы IT:\n"
+                    "/open [N] — показать открытые заявки\n"
+                    "/take <ID> — взять заявку\n"
+                    "/release <ID> — освободить заявку\n"
+                    "/close <ID> — закрыть заявку\n"
+                    "/clarify <ID> — запросить уточнение"
+                ),
+                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+            )
+            await event.answer(notification="Сервисные команды")
+            return
+
+        if action == "admin_help":
+            if not is_admin(user_id, admin_ids):
+                await event.answer(notification="Доступно только администратору")
+                return
+            await event.message.answer(
+                text=(
+                    "Роль: администратор.\n"
+                    "У вас есть полный доступ к сервисным действиям и override по заявкам.\n"
+                    "Используйте кнопки ниже для одобрения заявок и управления пользователями."
+                ),
+                attachments=[build_admin_menu_keyboard()],
+            )
+            await event.answer(notification="Права администратора")
+            return
+
+        if action == "admin_pending":
+            if not is_admin(user_id, admin_ids):
+                await event.answer(notification="Доступно только администратору")
+                return
+            pending_items = access_registry.list_pending()
+            if not pending_items:
+                await event.message.answer("Новых заявок на доступ нет.")
+                await event.answer(notification="Список заявок")
+                return
+            await event.message.answer(f"Заявок на доступ: {len(pending_items)}")
+            for item in pending_items:
+                await event.message.answer(
+                    text=_build_single_pending_text(item),
+                    attachments=[build_admin_request_keyboard(item.user_id)],
+                )
+            await event.answer(notification="Список заявок")
+            return
+
+        if action == "admin_pending_one":
+            if not is_admin(user_id, admin_ids):
+                await event.answer(notification="Доступно только администратору")
+                return
+            try:
+                target_user_id = int(payload.value.strip())
+            except Exception:
+                await event.answer(notification="Некорректный user_id")
+                return
+            item = _find_pending_item(access_registry, target_user_id)
+            if not item:
+                await event.answer(notification="Заявка не найдена")
+                return
+            await event.message.edit(
+                text=_build_single_pending_text(item),
+                attachments=[build_admin_request_keyboard(target_user_id)],
+            )
+            await event.answer(notification="Заявка")
+            return
+
+        if action == "admin_approve":
+            if not is_admin(user_id, admin_ids):
+                await event.answer(notification="Доступно только администратору")
+                return
+            try:
+                target_user_id = int(payload.value.strip())
+            except Exception:
+                await event.answer(notification="Некорректный user_id")
+                return
+            item = _find_pending_item(access_registry, target_user_id)
+            if not item:
+                await _safe_answer(event, "Заявка не найдена")
+                return
+            await _safe_answer(event, "Выбор роли")
+            await _replace_callback_message(
+                event,
+                text=(
+                    _build_single_pending_text(item)
+                    + "\n\nВыберите роль для выдачи доступа:"
+                ),
+                attachment=build_admin_role_select_keyboard(target_user_id),
+            )
+            return
+
+        if action in {"admin_role_user", "admin_role_it", "admin_role_admin"}:
+            if not is_admin(user_id, admin_ids):
+                await event.answer(notification="Доступно только администратору")
+                return
+            try:
+                target_user_id = int(payload.value.strip())
+            except Exception:
+                await event.answer(notification="Некорректный user_id")
+                return
+
+            role_map = {
+                "admin_role_user": ("user", "Пользователь"),
+                "admin_role_it": ("it", "IT специалист"),
+                "admin_role_admin": ("admin", "Администратор"),
+            }
+            role_token, role_label = role_map[action]
+            approve_status = access_registry.approve(target_user_id, role=role_token)
+            if approve_status == "approved":
+                await _safe_answer(event, f"Одобрено: {target_user_id}")
+                await _replace_callback_message(
+                    event,
+                    text=(
+                        f"Заявка обработана.\n"
+                        f"ID: {target_user_id}\n"
+                        f"Статус: одобрено\n"
+                        f"Роль: {role_label}"
+                    ),
+                    attachment=build_admin_menu_keyboard(),
+                )
+                try:
+                    await event._ensure_bot().send_message(
+                        user_id=target_user_id,
+                        text=(
+                            "Ваша заявка одобрена.\n"
+                            f"Назначена роль: {role_label}\n"
+                            "Используйте /start или /menu."
+                        ),
+                        attachments=[_build_menu_for_user(target_user_id, cfg, access_registry)],
+                    )
+                except Exception:
+                    pass
+                return
+            if approve_status == "already_approved":
+                await _safe_answer(event, "Пользователь уже одобрен")
+                return
+            if approve_status == "invalid_role":
+                await _safe_answer(event, "Некорректная роль")
+                return
+            await _safe_answer(event, "Заявка не найдена")
+            return
+
+        if action == "admin_reject":
+            if not is_admin(user_id, admin_ids):
+                await event.answer(notification="Доступно только администратору")
+                return
+            try:
+                target_user_id = int(payload.value.strip())
+            except Exception:
+                await event.answer(notification="Некорректный user_id")
+                return
+
+            reject_status = access_registry.reject(target_user_id)
+            if reject_status == "rejected":
+                await _safe_answer(event, f"Отклонено: {target_user_id}")
+                await _replace_callback_message(
+                    event,
+                    text=(
+                        f"Заявка обработана.\n"
+                        f"ID: {target_user_id}\n"
+                        "Статус: отклонено"
+                    ),
+                    attachment=build_admin_menu_keyboard(),
+                )
+                try:
+                    await event._ensure_bot().send_message(
+                        user_id=target_user_id,
+                        text="Заявка на доступ отклонена администратором.",
+                    )
+                except Exception:
+                    pass
+            else:
+                await _safe_answer(event, "Заявка не найдена")
+            return
+
+        if action == "admin_users":
+            if not is_admin(user_id, admin_ids):
+                await event.answer(notification="Доступно только администратору")
+                return
+            users = access_registry.list_users()
+            user_entries = [
+                (item.user_id, item.user_name)
+                for item in users
+                if item.user_id not in set(admin_ids)
+            ]
+            await event.message.answer(
+                text=_build_users_text(users),
+                attachments=[build_admin_users_keyboard(user_entries)],
+            )
+            await event.answer(notification="Список пользователей")
+            return
+
+        if action == "admin_user_open":
+            if not is_admin(user_id, admin_ids):
+                await event.answer(notification="Доступно только администратору")
+                return
+            try:
+                target_user_id = int(payload.value.strip())
+            except Exception:
+                await event.answer(notification="Некорректный user_id")
+                return
+            item = _find_user_item(access_registry, target_user_id)
+            if not item:
+                await event.answer(notification="Пользователь не найден")
+                return
+            await event.message.answer(
+                text=_build_user_card_text(item),
+                attachments=[build_admin_user_actions_keyboard(target_user_id)],
+            )
+            await event.answer(notification="Карточка пользователя")
+            return
+
+        if action == "admin_ban":
+            if not is_admin(user_id, admin_ids):
+                await event.answer(notification="Доступно только администратору")
+                return
+            try:
+                target_user_id = int(payload.value.strip())
+            except Exception:
+                await event.answer(notification="Некорректный user_id")
+                return
+
+            if target_user_id in set(admin_ids):
+                await event.answer(notification="Нельзя забанить администратора")
+                return
+
+            ban_status = access_registry.ban(target_user_id)
+            if ban_status == "banned":
+                await event.message.answer(
+                    text=(
+                        "Пользователь обработан.\n"
+                        f"ID: {target_user_id}\n"
+                        "Статус: заблокирован"
+                    ),
+                    attachments=[build_admin_menu_keyboard()],
+                )
+                await event.answer(notification=f"Заблокирован: {target_user_id}")
+            elif ban_status == "already_banned":
+                await event.answer(notification="Пользователь уже заблокирован")
+            else:
+                await event.answer(notification="Пользователь не найден")
+            return
+
+        if action == "admin_delete_user":
+            if not is_admin(user_id, admin_ids):
+                await event.answer(notification="Доступно только администратору")
+                return
+            try:
+                target_user_id = int(payload.value.strip())
+            except Exception:
+                await event.answer(notification="Некорректный user_id")
+                return
+
+            if target_user_id in set(admin_ids):
+                await event.answer(notification="Нельзя удалить администратора")
+                return
+
+            delete_status = access_registry.delete_user(target_user_id)
+            if delete_status == "deleted":
+                await event.message.answer(
+                    text=(
+                        "Пользователь обработан.\n"
+                        f"ID: {target_user_id}\n"
+                        "Статус: удален"
+                    ),
+                    attachments=[build_admin_menu_keyboard()],
+                )
+                await event.answer(notification=f"Удален: {target_user_id}")
+            else:
+                await event.answer(notification="Пользователь не найден")
             return
 
         if action == "create":
@@ -82,7 +516,7 @@ def register(dp) -> None:
             lines = [user_texts.user_ticket_line(ticket) for ticket in user_tickets]
             await event.message.answer(
                 text=_build_user_ticket_list_text(lines),
-                attachments=[build_main_menu_keyboard()],
+                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
             )
             await event.answer(notification="Показал обращения")
             return
@@ -90,7 +524,7 @@ def register(dp) -> None:
         if action == "wifi":
             await event.message.answer(
                 text=user_texts.WIFI_HELP_TEXT,
-                attachments=[build_main_menu_keyboard()],
+                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
             )
             await event.answer(notification="Инструкция по сети")
             return
@@ -98,7 +532,7 @@ def register(dp) -> None:
         if action == "help":
             await event.message.answer(
                 text=user_texts.HELP_TEXT,
-                attachments=[build_main_menu_keyboard()],
+                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
             )
             await event.answer(notification="Справка")
             return
@@ -118,56 +552,116 @@ def register(dp) -> None:
             user_flow.reset(user_id)
             await event.message.answer(
                 text=user_texts.CANCELLED_TEXT,
-                attachments=[build_main_menu_keyboard()],
+                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
             )
             await event.answer(notification="Отменено")
             return
 
         if action == "confirm_send":
-            draft = user_flow.get(user_id)
-            if not draft.category or not draft.problem_text:
-                await event.answer(notification="Не хватает данных для отправки")
-                return
+            await event.answer(notification="Отправляю заявку...")
+            try:
+                draft = user_flow.get(user_id)
+                if not draft.category or not draft.problem_text:
+                    await event.message.answer(
+                        text="Не хватает данных для отправки. Создайте обращение заново.",
+                        attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+                    )
+                    return
 
-            sender = event.callback.user
-            requester_name = get_full_name(sender, fallback="Пользователь")
-            requester_phone = getattr(sender, "phone", None)
-            requester_department = getattr(sender, "department", None)
+                sender = event.callback.user
+                requester_name = get_full_name(sender, fallback="Пользователь")
+                requester_phone = getattr(sender, "phone", None)
+                requester_department = getattr(sender, "department", None)
 
-            ticket = await tickets.create_ticket(
-                requester_user_id=user_id,
-                requester_name=requester_name,
-                category=draft.category,
-                text=draft.problem_text,
-                requester_phone=str(requester_phone) if requester_phone else None,
-                requester_department=str(requester_department) if requester_department else None,
-            )
-            logger.info(
-                "Ticket created: ticket_id=%s user_id=%s category=%s",
-                ticket.ticket_id,
-                user_id,
-                draft.category,
-            )
-
-            group_sent = await event._ensure_bot().send_message(
-                chat_id=cfg.bot.group_chat_id,
-                text=specialist_texts.render_group_ticket(ticket),
-                attachments=[build_ticket_actions_keyboard(ticket.ticket_id)],
-            )
-
-            if group_sent and group_sent.message and group_sent.message.body:
-                ticket_links.bind_group_message(
-                    ticket_id=ticket.ticket_id,
-                    group_message_id=group_sent.message.body.mid,
+                ticket = await tickets.create_ticket(
+                    requester_user_id=user_id,
+                    requester_name=requester_name,
+                    category=draft.category,
+                    text=draft.problem_text,
+                    requester_phone=str(requester_phone) if requester_phone else None,
+                    requester_department=str(requester_department) if requester_department else None,
+                )
+                logger.info(
+                    "Ticket created: ticket_id=%s user_id=%s category=%s",
+                    ticket.ticket_id,
+                    user_id,
+                    draft.category,
                 )
 
-            user_flow.reset(user_id)
-            await event.message.answer(
-                text=user_texts.SUBMITTED_TEXT,
-                attachments=[build_main_menu_keyboard()],
-            )
-            await event.answer(notification="Заявка отправлена")
-            return
+                group_sent = None
+                try:
+                    group_sent = await event._ensure_bot().send_message(
+                        chat_id=cfg.bot.group_chat_id,
+                        text=specialist_texts.render_group_ticket(ticket),
+                        attachments=[build_ticket_actions_keyboard(ticket.ticket_id)],
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to send ticket to group with attachments: ticket_id=%s user_id=%s group_chat_id=%s",
+                        ticket.ticket_id,
+                        user_id,
+                        cfg.bot.group_chat_id,
+                    )
+                    try:
+                        # Fallback for chats where rich attachments/buttons are not accepted.
+                        group_sent = await event._ensure_bot().send_message(
+                            chat_id=cfg.bot.group_chat_id,
+                            text=specialist_texts.render_group_ticket(ticket),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to send ticket to group without attachments: ticket_id=%s user_id=%s group_chat_id=%s",
+                            ticket.ticket_id,
+                            user_id,
+                            cfg.bot.group_chat_id,
+                        )
+                        user_flow.reset(user_id)
+                        await event.message.answer(
+                            text=(
+                                f"Заявка {ticket.ticket_id} сохранена, но не отправлена в группу специалистов.\n"
+                                "Проверьте MAX_GROUP_CHAT_ID и права бота в группе."
+                            ),
+                            attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+                        )
+                        return
+
+                if not group_sent or not getattr(group_sent, "message", None):
+                    logger.error(
+                        "Group send returned empty response: ticket_id=%s user_id=%s group_chat_id=%s",
+                        ticket.ticket_id,
+                        user_id,
+                        cfg.bot.group_chat_id,
+                    )
+                    user_flow.reset(user_id)
+                    await event.message.answer(
+                        text=(
+                            f"Заявка {ticket.ticket_id} сохранена, но API не подтвердил отправку в группу.\n"
+                            "Проверьте MAX_GROUP_CHAT_ID и доступ бота к чату."
+                        ),
+                        attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+                    )
+                    return
+
+                if group_sent.message and group_sent.message.body:
+                    ticket_links.bind_group_message(
+                        ticket_id=ticket.ticket_id,
+                        group_message_id=group_sent.message.body.mid,
+                    )
+
+                user_flow.reset(user_id)
+                await event.message.answer(
+                    text=user_texts.SUBMITTED_TEXT,
+                    attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+                )
+                return
+            except Exception:
+                logger.exception("Unhandled confirm_send error: user_id=%s", user_id)
+                user_flow.reset(user_id)
+                await event.message.answer(
+                    text="Ошибка при отправке обращения. Попробуйте ещё раз.",
+                    attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+                )
+                return
 
         await event.answer(notification="Неизвестное действие")
 
@@ -176,15 +670,16 @@ def register(dp) -> None:
         event: MessageCallback, payload: SpecialistTicketPayload
     ):
         actor = event.callback.user
-        actor_id = actor.user_id
+        actor_id = int(actor.user_id)
         actor_name = get_full_name(actor, fallback=f"ID {actor_id}")
         action = payload.action
         ticket_id = payload.ticket_id
+        admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
 
         if action == "take" and not can_take_ticket(
             user_id=actor_id,
-            admin_ids=cfg.bot.admin_ids,
-            specialist_ids=cfg.bot.it_specialist_ids,
+            admin_ids=admin_ids,
+            specialist_ids=specialist_ids,
         ):
             await event.answer(notification=specialist_texts.FORBIDDEN_TEXT)
             return
@@ -197,8 +692,8 @@ def register(dp) -> None:
             if not can_change_ticket_status(
                 actor_user_id=actor_id,
                 ticket=ticket,
-                admin_ids=cfg.bot.admin_ids,
-                specialist_ids=cfg.bot.it_specialist_ids,
+                admin_ids=admin_ids,
+                specialist_ids=specialist_ids,
             ):
                 await event.answer(notification=specialist_texts.FORBIDDEN_TEXT)
                 return
@@ -213,21 +708,21 @@ def register(dp) -> None:
             result = await tickets.release_ticket(
                 ticket_id=ticket_id,
                 actor_user_id=actor_id,
-                admin_ids=cfg.bot.admin_ids,
+                admin_ids=admin_ids,
             )
         elif action == "close":
             result = await tickets.close_ticket(
                 ticket_id=ticket_id,
                 actor_user_id=actor_id,
                 actor_name=actor_name,
-                admin_ids=cfg.bot.admin_ids,
+                admin_ids=admin_ids,
             )
         elif action == "clarify":
             result = await tickets.request_clarification(
                 ticket_id=ticket_id,
                 actor_user_id=actor_id,
                 actor_name=actor_name,
-                admin_ids=cfg.bot.admin_ids,
+                admin_ids=admin_ids,
             )
         else:
             await event.answer(notification="Неизвестное действие")

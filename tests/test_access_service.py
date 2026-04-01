@@ -12,8 +12,25 @@ from app.helpdesk.models.ticket import Ticket
 
 class AccessServiceTests(unittest.TestCase):
     def test_user_menu_visibility(self) -> None:
-        self.assertTrue(can_view_user_menu(1))
-        self.assertFalse(can_view_user_menu(0))
+        self.assertTrue(can_view_user_menu(1, admin_ids=(), specialist_ids=(), user_ids=()))
+        self.assertFalse(can_view_user_menu(0, admin_ids=(), specialist_ids=(), user_ids=()))
+
+    def test_user_menu_visibility_allowlist_mode(self) -> None:
+        admin_ids = (10,)
+        specialist_ids = (20,)
+        user_ids = (30,)
+        self.assertTrue(
+            can_view_user_menu(10, admin_ids=admin_ids, specialist_ids=specialist_ids, user_ids=user_ids)
+        )
+        self.assertTrue(
+            can_view_user_menu(20, admin_ids=admin_ids, specialist_ids=specialist_ids, user_ids=user_ids)
+        )
+        self.assertTrue(
+            can_view_user_menu(30, admin_ids=admin_ids, specialist_ids=specialist_ids, user_ids=user_ids)
+        )
+        self.assertFalse(
+            can_view_user_menu(40, admin_ids=admin_ids, specialist_ids=specialist_ids, user_ids=user_ids)
+        )
 
     def test_service_functions_visibility(self) -> None:
         admin_ids = (10,)

@@ -15,8 +15,27 @@ def is_user(user_id: int) -> bool:
     return user_id > 0
 
 
-def can_view_user_menu(user_id: int) -> bool:
-    return is_user(user_id)
+def can_view_user_menu(
+    user_id: int,
+    admin_ids: Iterable[int],
+    specialist_ids: Iterable[int],
+    user_ids: Iterable[int] = (),
+    approved_user_ids: Iterable[int] = (),
+) -> bool:
+    if not is_user(user_id):
+        return False
+
+    allowed_users = (
+        set(admin_ids)
+        | set(specialist_ids)
+        | set(user_ids)
+        | set(approved_user_ids)
+    )
+    if not allowed_users:
+        # Backward-compatible mode: allow all positive user ids
+        # when no allow-lists are configured in env.
+        return True
+    return user_id in allowed_users
 
 
 def can_view_service_functions(

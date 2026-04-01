@@ -29,7 +29,7 @@ def register(dp) -> None:
             await event.answer(notification="Используйте сетевое меню в личном диалоге с ботом.")
             return
 
-        actor_id = event.callback.user.user_id
+        actor_id = int(event.callback.user.user_id)
         is_allowed = can_use_network_tools(
             user_id=actor_id,
             admin_ids=cfg.bot.admin_ids,

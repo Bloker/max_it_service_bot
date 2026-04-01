@@ -1,4 +1,4 @@
-from maxapi.types import ButtonsPayload, CallbackButton
+﻿from maxapi.types import ButtonsPayload, CallbackButton
 
 from app.network.payloads import NetworkMenuPayload
 
@@ -76,4 +76,3 @@ def build_device_type_keyboard(device_types: tuple[str, ...]):
         ]
     )
     return ButtonsPayload(buttons=rows).pack()
-
