@@ -22,6 +22,10 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_confirm_keyboard,
     build_main_menu_keyboard,
     build_ticket_actions_keyboard,
+    build_wifi_auth_keyboard,
+    build_wifi_device_keyboard,
+    build_wifi_resolution_keyboard,
+    build_wifi_scope_keyboard,
 )
 from app.helpdesk.payloads import SpecialistTicketPayload, UserMenuPayload
 from app.helpdesk.runtime import (
@@ -107,18 +111,20 @@ def _resolve_role_sets(cfg, access_registry):
 
 def _build_menu_for_user(user_id: int, cfg, access_registry):
     admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
+    can_view_service = can_view_service_functions(
+        user_id=user_id,
+        admin_ids=admin_ids,
+        specialist_ids=specialist_ids,
+    )
     return build_main_menu_keyboard(
         can_use_network_tools=can_use_network_tools(
             user_id=user_id,
             admin_ids=admin_ids,
             specialist_ids=specialist_ids,
         ),
-        can_view_service_functions=can_view_service_functions(
-            user_id=user_id,
-            admin_ids=admin_ids,
-            specialist_ids=specialist_ids,
-        ),
+        can_view_service_functions=can_view_service,
         is_admin=is_admin(user_id, admin_ids),
+        can_use_wifi_help=not can_view_service,
     )
 
 
@@ -522,11 +528,83 @@ def register(dp) -> None:
             return
 
         if action == "wifi":
+            if can_view_service_functions(
+                user_id=user_id,
+                admin_ids=admin_ids,
+                specialist_ids=specialist_ids,
+            ):
+                await event.answer(notification="Раздел доступен только пользователям")
+                return
+
             await event.message.answer(
-                text=user_texts.WIFI_HELP_TEXT,
+                text=user_texts.WIFI_SCOPE_TEXT,
+                attachments=[build_wifi_scope_keyboard()],
+            )
+            await event.answer(notification="Проверка Wi-Fi")
+            return
+
+        if action == "wifi_scope_one":
+            await event.message.answer(
+                text=user_texts.WIFI_DEVICE_PROMPT_TEXT,
+                attachments=[build_wifi_device_keyboard()],
+            )
+            await event.answer(notification="Выбор устройства")
+            return
+
+        if action == "wifi_scope_all":
+            await event.message.answer(
+                text=user_texts.WIFI_ESCALATE_TEXT,
                 attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
             )
-            await event.answer(notification="Инструкция по сети")
+            await event.answer(notification="Передайте заявку в поддержку")
+            return
+
+        if action == "wifi_device_mobile":
+            await event.message.answer(
+                text=user_texts.WIFI_MOBILE_RECOMMENDATIONS_TEXT,
+                attachments=[build_wifi_auth_keyboard()],
+            )
+            await event.answer(notification="Рекомендации отправлены")
+            return
+
+        if action == "wifi_device_laptop":
+            await event.message.answer(
+                text=user_texts.WIFI_LAPTOP_RECOMMENDATIONS_TEXT,
+                attachments=[build_wifi_auth_keyboard()],
+            )
+            await event.answer(notification="Рекомендации отправлены")
+            return
+
+        if action == "wifi_auth_yes":
+            await event.message.answer(
+                text=user_texts.WIFI_SURNAME_CHECK_TEXT,
+                attachments=[build_wifi_resolution_keyboard()],
+            )
+            await event.answer(notification="Проверьте фамилию гостя")
+            return
+
+        if action == "wifi_auth_no":
+            await event.message.answer(
+                text=user_texts.WIFI_ESCALATE_TEXT,
+                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+            )
+            await event.answer(notification="Передайте заявку в поддержку")
+            return
+
+        if action == "wifi_resolved":
+            await event.message.answer(
+                text=user_texts.WIFI_RESOLVED_TEXT,
+                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+            )
+            await event.answer(notification="Отлично")
+            return
+
+        if action == "wifi_unresolved":
+            await event.message.answer(
+                text=user_texts.WIFI_ESCALATE_TEXT,
+                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+            )
+            await event.answer(notification="Передайте заявку в поддержку")
             return
 
         if action == "help":

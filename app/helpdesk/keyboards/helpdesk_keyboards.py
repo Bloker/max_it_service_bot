@@ -8,13 +8,19 @@ def build_main_menu_keyboard(
     can_use_network_tools: bool = False,
     can_view_service_functions: bool = False,
     is_admin: bool = False,
+    can_use_wifi_help: bool = True,
 ):
     buttons = [
         [CallbackButton(text="Создать обращение", payload=UserMenuPayload(action="create").pack())],
         [CallbackButton(text="Мои обращения", payload=UserMenuPayload(action="my").pack())],
-        [CallbackButton(text="Wi-Fi и сеть", payload=UserMenuPayload(action="wifi").pack())],
         [CallbackButton(text="Помощь", payload=UserMenuPayload(action="help").pack())],
     ]
+
+    if can_use_wifi_help:
+        buttons.insert(
+            2,
+            [CallbackButton(text="Проблема Wi-Fi у гостя", payload=UserMenuPayload(action="wifi").pack())],
+        )
 
     if can_use_network_tools:
         buttons.append(
@@ -64,6 +70,70 @@ def build_confirm_keyboard():
             [CallbackButton(text="Отправить", payload=UserMenuPayload(action="confirm_send").pack())],
             [CallbackButton(text="Изменить текст", payload=UserMenuPayload(action="rewrite").pack())],
             [CallbackButton(text="Отмена", payload=UserMenuPayload(action="cancel").pack())],
+        ]
+    ).pack()
+
+
+def build_wifi_scope_keyboard():
+    return ButtonsPayload(
+        buttons=[
+            [
+                CallbackButton(
+                    text="Проблема у одного гостя",
+                    payload=UserMenuPayload(action="wifi_scope_one").pack(),
+                )
+            ],
+            [
+                CallbackButton(
+                    text="Проблема у всех гостей",
+                    payload=UserMenuPayload(action="wifi_scope_all").pack(),
+                )
+            ],
+            [CallbackButton(text="Отмена", payload=UserMenuPayload(action="menu").pack())],
+        ]
+    ).pack()
+
+
+def build_wifi_device_keyboard():
+    return ButtonsPayload(
+        buttons=[
+            [
+                CallbackButton(
+                    text="Смартфон / планшет",
+                    payload=UserMenuPayload(action="wifi_device_mobile").pack(),
+                )
+            ],
+            [
+                CallbackButton(
+                    text="Ноутбук",
+                    payload=UserMenuPayload(action="wifi_device_laptop").pack(),
+                )
+            ],
+            [CallbackButton(text="Отмена", payload=UserMenuPayload(action="menu").pack())],
+        ]
+    ).pack()
+
+
+def build_wifi_auth_keyboard():
+    return ButtonsPayload(
+        buttons=[
+            [CallbackButton(text="Да", payload=UserMenuPayload(action="wifi_auth_yes").pack())],
+            [CallbackButton(text="Нет", payload=UserMenuPayload(action="wifi_auth_no").pack())],
+            [CallbackButton(text="Отмена", payload=UserMenuPayload(action="menu").pack())],
+        ]
+    ).pack()
+
+
+def build_wifi_resolution_keyboard():
+    return ButtonsPayload(
+        buttons=[
+            [CallbackButton(text="Проблема решена", payload=UserMenuPayload(action="wifi_resolved").pack())],
+            [
+                CallbackButton(
+                    text="Проблема не решена",
+                    payload=UserMenuPayload(action="wifi_unresolved").pack(),
+                )
+            ],
         ]
     ).pack()
 

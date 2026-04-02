@@ -59,18 +59,20 @@ def _render_open_tickets(lines: list[str]) -> str:
 
 
 def _build_menu_for_user(user_id: int, cfg):
+    can_view_service = can_view_service_functions(
+        user_id=user_id,
+        admin_ids=cfg.bot.admin_ids,
+        specialist_ids=cfg.bot.it_specialist_ids,
+    )
     return build_main_menu_keyboard(
         can_use_network_tools=can_use_network_tools(
             user_id=user_id,
             admin_ids=cfg.bot.admin_ids,
             specialist_ids=cfg.bot.it_specialist_ids,
         ),
-        can_view_service_functions=can_view_service_functions(
-            user_id=user_id,
-            admin_ids=cfg.bot.admin_ids,
-            specialist_ids=cfg.bot.it_specialist_ids,
-        ),
+        can_view_service_functions=can_view_service,
         is_admin=is_admin(user_id, cfg.bot.admin_ids),
+        can_use_wifi_help=not can_view_service,
     )
 
 
@@ -85,18 +87,20 @@ def _resolve_role_sets(cfg, access_registry):
 
 def _build_menu_for_user_with_registry(user_id: int, cfg, access_registry):
     admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
+    can_view_service = can_view_service_functions(
+        user_id=user_id,
+        admin_ids=admin_ids,
+        specialist_ids=specialist_ids,
+    )
     return build_main_menu_keyboard(
         can_use_network_tools=can_use_network_tools(
             user_id=user_id,
             admin_ids=admin_ids,
             specialist_ids=specialist_ids,
         ),
-        can_view_service_functions=can_view_service_functions(
-            user_id=user_id,
-            admin_ids=admin_ids,
-            specialist_ids=specialist_ids,
-        ),
+        can_view_service_functions=can_view_service,
         is_admin=is_admin(user_id, admin_ids),
+        can_use_wifi_help=not can_view_service,
     )
 
 
