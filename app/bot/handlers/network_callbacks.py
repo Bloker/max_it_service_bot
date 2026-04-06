@@ -46,7 +46,7 @@ def register(dp) -> None:
         is_service_actor = can_view_service
         return build_main_menu_keyboard(
             can_create_ticket=True,
-            can_view_my_tickets=is_service_actor,
+            can_view_my_tickets=True,
             can_view_help=is_service_actor,
             can_use_network_tools=can_use_network_tools(
                 user_id=user_id,
