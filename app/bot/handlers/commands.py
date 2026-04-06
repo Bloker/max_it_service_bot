@@ -52,7 +52,13 @@ def _build_menu_for_user(user_id: int, cfg, access_registry):
         admin_ids=admin_ids,
         specialist_ids=specialist_ids,
     )
+    hotel_code = access_registry.get_user_hotel(user_id)
+    hotel_features = set(access_registry.get_hotel_features(hotel_code))
+    is_service_actor = can_view_service
     return build_main_menu_keyboard(
+        can_create_ticket=True,
+        can_view_my_tickets=is_service_actor,
+        can_view_help=is_service_actor,
         can_use_network_tools=can_use_network_tools(
             user_id=user_id,
             admin_ids=admin_ids,
@@ -60,7 +66,8 @@ def _build_menu_for_user(user_id: int, cfg, access_registry):
         ),
         can_view_service_functions=can_view_service,
         is_admin=is_admin(user_id, admin_ids),
-        can_use_wifi_help=not can_view_service,
+        can_use_wifi_help=not is_service_actor and "wifi_guest_issue" in hotel_features,
+        can_use_tv_help=not is_service_actor and "tv_guest_issue" in hotel_features,
     )
 
 

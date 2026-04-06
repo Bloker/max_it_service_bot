@@ -21,6 +21,7 @@ class BotConfig:
     user_registry_path: str
     admin_ids: tuple[int, ...]
     it_specialist_ids: tuple[int, ...]
+    skip_updates_on_start: bool
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,7 @@ def get_config() -> AppConfig:
         os.getenv("MAX_IT_SPECIALIST_IDS", ""),
         "MAX_IT_SPECIALIST_IDS",
     )
+    skip_updates_on_start = _parse_bool_env("MAX_SKIP_UPDATES_ON_START", True)
 
     ticket_backend = os.getenv("MAX_TICKET_BACKEND", "sqlite").strip().lower()
     if ticket_backend not in {"sqlite", "memory"}:
@@ -197,6 +199,7 @@ def get_config() -> AppConfig:
             user_registry_path=user_registry_path,
             admin_ids=admin_ids,
             it_specialist_ids=it_specialist_ids,
+            skip_updates_on_start=skip_updates_on_start,
         ),
         logs=logs,
         tickets=TicketStorageConfig(

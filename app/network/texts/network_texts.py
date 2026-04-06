@@ -8,7 +8,6 @@ NO_ACCESS_TEXT = "Нет доступа к сетевым инструмента
 PROMPT_BY_TOOL: dict[str, str] = {
     "ping": "Введите корпоративный хост/IP для ping.",
     "dns": "Введите корпоративный хост для DNS lookup.",
-    "host_check": "Введите корпоративный хост/IP для host check.",
     "traceroute": "Введите корпоративный хост/IP для traceroute.",
     "nslookup": "Введите корпоративный хост для nslookup.",
     "whois": "Введите корпоративный хост для whois.",

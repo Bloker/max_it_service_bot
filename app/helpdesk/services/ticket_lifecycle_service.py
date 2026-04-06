@@ -1,7 +1,7 @@
 ﻿import logging
 from collections.abc import Iterable
 
-from app.helpdesk.models.ticket import Ticket
+from app.helpdesk.models.ticket import Ticket, TicketStatus
 from app.helpdesk.repositories.contracts import TicketRepository
 from app.helpdesk.repositories.types import TicketActionResult
 
@@ -41,8 +41,16 @@ class TicketLifecycleService:
     async def get_ticket(self, ticket_id: str) -> Ticket | None:
         return await self.repository.get_by_ticket_id(ticket_id)
 
-    async def list_user_tickets(self, user_id: int, limit: int = 10) -> list[Ticket]:
-        return await self.repository.list_by_user(user_id=user_id, limit=limit)
+    async def list_user_tickets(
+        self,
+        user_id: int,
+        limit: int = 10,
+        include_closed: bool = False,
+    ) -> list[Ticket]:
+        tickets = await self.repository.list_by_user(user_id=user_id, limit=limit)
+        if include_closed:
+            return tickets
+        return [ticket for ticket in tickets if ticket.status != TicketStatus.CLOSED]
 
     async def list_open_tickets(self, limit: int = 50) -> list[Ticket]:
         return await self.repository.list_open(limit=limit)

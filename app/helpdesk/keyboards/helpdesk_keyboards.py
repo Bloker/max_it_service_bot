@@ -5,22 +5,37 @@ from app.helpdesk.payloads import SpecialistTicketPayload, UserMenuPayload
 
 def build_main_menu_keyboard(
     *,
+    can_create_ticket: bool = True,
+    can_view_my_tickets: bool = True,
+    can_view_help: bool = True,
     can_use_network_tools: bool = False,
     can_view_service_functions: bool = False,
     is_admin: bool = False,
-    can_use_wifi_help: bool = True,
+    can_use_wifi_help: bool = False,
+    can_use_tv_help: bool = False,
 ):
-    buttons = [
-        [CallbackButton(text="Создать обращение", payload=UserMenuPayload(action="create").pack())],
-        [CallbackButton(text="Мои обращения", payload=UserMenuPayload(action="my").pack())],
-        [CallbackButton(text="Помощь", payload=UserMenuPayload(action="help").pack())],
-    ]
-
     if can_use_wifi_help:
-        buttons.insert(
-            2,
+        buttons = [
             [CallbackButton(text="Проблема Wi-Fi у гостя", payload=UserMenuPayload(action="wifi").pack())],
+        ]
+    else:
+        buttons = []
+
+    if can_use_tv_help:
+        buttons.append(
+            [CallbackButton(text="Проблема с TV у гостя", payload=UserMenuPayload(action="tv_guest").pack())]
         )
+
+    if can_create_ticket:
+        buttons.append(
+            [CallbackButton(text="Создать обращение", payload=UserMenuPayload(action="create").pack())]
+        )
+
+    if can_view_my_tickets:
+        buttons.append([CallbackButton(text="Мои обращения", payload=UserMenuPayload(action="my").pack())])
+
+    if can_view_help:
+        buttons.append([CallbackButton(text="Помощь", payload=UserMenuPayload(action="help").pack())])
 
     if can_use_network_tools:
         buttons.append(
@@ -132,6 +147,56 @@ def build_wifi_resolution_keyboard():
                 CallbackButton(
                     text="Проблема не решена",
                     payload=UserMenuPayload(action="wifi_unresolved").pack(),
+                )
+            ],
+        ]
+    ).pack()
+
+
+def build_wifi_escalation_keyboard():
+    return ButtonsPayload(
+        buttons=[
+            [
+                CallbackButton(
+                    text="Мои обращения",
+                    payload=UserMenuPayload(action="my").pack(),
+                )
+            ],
+            [
+                CallbackButton(
+                    text="В главное меню",
+                    payload=UserMenuPayload(action="menu").pack(),
+                )
+            ],
+            [
+                CallbackButton(
+                    text="Назад",
+                    payload=UserMenuPayload(action="wifi").pack(),
+                )
+            ],
+        ]
+    ).pack()
+
+
+def build_tv_escalation_keyboard():
+    return ButtonsPayload(
+        buttons=[
+            [
+                CallbackButton(
+                    text="Мои обращения",
+                    payload=UserMenuPayload(action="my").pack(),
+                )
+            ],
+            [
+                CallbackButton(
+                    text="В главное меню",
+                    payload=UserMenuPayload(action="menu").pack(),
+                )
+            ],
+            [
+                CallbackButton(
+                    text="Назад",
+                    payload=UserMenuPayload(action="tv_guest").pack(),
                 )
             ],
         ]
@@ -256,6 +321,12 @@ def build_admin_user_actions_keyboard(user_id: int):
         buttons=[
             [
                 CallbackButton(
+                    text="Назначить отель",
+                    payload=UserMenuPayload(action="admin_user_hotel", value=str(user_id)).pack(),
+                )
+            ],
+            [
+                CallbackButton(
                     text="Бан",
                     payload=UserMenuPayload(action="admin_ban", value=str(user_id)).pack(),
                 ),
@@ -309,9 +380,43 @@ def build_ticket_actions_keyboard(ticket_id: str):
             ],
             [
                 CallbackButton(
-                    text="Запросить уточнение",
-                    payload=SpecialistTicketPayload(action="clarify", ticket_id=ticket_id).pack(),
+                    text="Не закрытые заявки",
+                    payload=SpecialistTicketPayload(action="open_list", ticket_id=ticket_id).pack(),
                 )
             ],
         ]
     ).pack()
+
+
+def build_admin_hotel_select_keyboard(user_id: int, hotels: tuple[tuple[str, str], ...]):
+    rows: list[list[CallbackButton]] = []
+    for hotel_code, hotel_label in hotels:
+        rows.append(
+            [
+                CallbackButton(
+                    text=hotel_label,
+                    payload=UserMenuPayload(
+                        action="admin_hotel_set",
+                        value=f"{user_id}:{hotel_code}",
+                    ).pack(),
+                )
+            ]
+        )
+
+    rows.append(
+        [
+            CallbackButton(
+                text="Снять привязку",
+                payload=UserMenuPayload(action="admin_hotel_set", value=f"{user_id}:none").pack(),
+            )
+        ]
+    )
+    rows.append(
+        [
+            CallbackButton(
+                text="Назад",
+                payload=UserMenuPayload(action="admin_user_open", value=str(user_id)).pack(),
+            )
+        ]
+    )
+    return ButtonsPayload(buttons=rows).pack()

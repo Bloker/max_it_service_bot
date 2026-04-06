@@ -1,5 +1,6 @@
 ﻿import logging
 
+from maxapi.enums.parse_mode import ParseMode
 from maxapi.types import MessageCallback
 
 from app.admin.runtime import get_user_access_registry
@@ -13,19 +14,21 @@ from app.admin.services.access_service import (
 )
 from app.common.user_helpers import get_full_name
 from app.helpdesk.keyboards.helpdesk_keyboards import (
+    build_admin_hotel_select_keyboard,
     build_admin_menu_keyboard,
     build_admin_request_keyboard,
     build_admin_role_select_keyboard,
     build_admin_user_actions_keyboard,
     build_admin_users_keyboard,
     build_categories_keyboard,
-    build_confirm_keyboard,
     build_main_menu_keyboard,
     build_ticket_actions_keyboard,
     build_wifi_auth_keyboard,
     build_wifi_device_keyboard,
+    build_wifi_escalation_keyboard,
     build_wifi_resolution_keyboard,
     build_wifi_scope_keyboard,
+    build_tv_escalation_keyboard,
 )
 from app.helpdesk.payloads import SpecialistTicketPayload, UserMenuPayload
 from app.helpdesk.runtime import (
@@ -81,12 +84,26 @@ def _build_users_text(users) -> str:
     return "\n".join(lines)
 
 
-def _build_user_card_text(item) -> str:
+def _build_open_tickets_text(items) -> str:
+    if not items:
+        return "Открытых заявок нет."
+    lines = ["Не закрытые заявки:"]
+    for ticket in items:
+        assignee = ticket.assignee_name or "не назначен"
+        lines.append(
+            f"{ticket.ticket_id} | {ticket.status.value} | {assignee} | {ticket.category}"
+        )
+    return "\n".join(lines)
+
+
+def _build_user_card_text(item, access_registry) -> str:
+    hotel_label = access_registry.get_hotel_label(item.hotel_code) or "-"
     lines = [
         "Пользователь:",
         f"ID: {item.user_id}",
         f"Имя: {item.user_name}",
         f"Телефон: {item.phone or '-'}",
+        f"Отель: {hotel_label}",
         f"Роль: {item.role}",
         f"Статус: {item.status}",
     ]
@@ -116,7 +133,13 @@ def _build_menu_for_user(user_id: int, cfg, access_registry):
         admin_ids=admin_ids,
         specialist_ids=specialist_ids,
     )
+    hotel_code = access_registry.get_user_hotel(user_id)
+    hotel_features = set(access_registry.get_hotel_features(hotel_code))
+    is_service_actor = can_view_service
     return build_main_menu_keyboard(
+        can_create_ticket=True,
+        can_view_my_tickets=is_service_actor,
+        can_view_help=is_service_actor,
         can_use_network_tools=can_use_network_tools(
             user_id=user_id,
             admin_ids=admin_ids,
@@ -124,7 +147,8 @@ def _build_menu_for_user(user_id: int, cfg, access_registry):
         ),
         can_view_service_functions=can_view_service,
         is_admin=is_admin(user_id, admin_ids),
-        can_use_wifi_help=not can_view_service,
+        can_use_wifi_help=not is_service_actor and "wifi_guest_issue" in hotel_features,
+        can_use_tv_help=not is_service_actor and "tv_guest_issue" in hotel_features,
     )
 
 
@@ -155,6 +179,41 @@ def register(dp) -> None:
     ticket_links = get_ticket_link_service()
     network_session = get_network_session_service()
     access_registry = get_user_access_registry()
+
+    async def _start_wifi_escalation(event: MessageCallback, user_id: int) -> None:
+        category = "Сеть / Wi-Fi" if "Сеть / Wi-Fi" in categories else categories[-1]
+        user_flow.begin_create(user_id)
+        draft = user_flow.set_category(user_id, category)
+        draft.step = "awaiting_wifi_escalation_text"
+        await event.message.answer(
+            text=(
+                f"{user_texts.WIFI_ESCALATE_TEXT}\n\n"
+                "Напишите текст обращения и при необходимости добавьте фото/файл несколькими сообщениями.\n"
+                "Через 20 секунд после последнего сообщения обращение отправится автоматически."
+            ),
+            attachments=[build_wifi_escalation_keyboard()],
+        )
+        await event.answer(notification="Опишите проблему для поддержки")
+
+    async def _start_tv_escalation(event: MessageCallback, user_id: int) -> None:
+        if "TV у гостя" in categories:
+            category = "TV у гостя"
+        elif "Телефония" in categories:
+            category = "Телефония"
+        else:
+            category = categories[-1]
+        user_flow.begin_create(user_id)
+        draft = user_flow.set_category(user_id, category)
+        draft.step = "awaiting_tv_escalation_text"
+        await event.message.answer(
+            text=(
+                f"{user_texts.TV_ESCALATE_TEXT}\n\n"
+                "Напишите текст обращения и при необходимости добавьте фото/файл несколькими сообщениями.\n"
+                "Через 20 секунд после последнего сообщения обращение отправится автоматически."
+            ),
+            attachments=[build_tv_escalation_keyboard()],
+        )
+        await event.answer(notification="Опишите проблему TV для поддержки")
 
     async def _safe_answer(event: MessageCallback, notification: str) -> None:
         try:
@@ -406,13 +465,13 @@ def register(dp) -> None:
                 await event.answer(notification="Доступно только администратору")
                 return
             users = access_registry.list_users()
+            visible_users = [item for item in users if item.user_id not in set(admin_ids)]
             user_entries = [
                 (item.user_id, item.user_name)
-                for item in users
-                if item.user_id not in set(admin_ids)
+                for item in visible_users
             ]
             await event.message.answer(
-                text=_build_users_text(users),
+                text=_build_users_text(visible_users),
                 attachments=[build_admin_users_keyboard(user_entries)],
             )
             await event.answer(notification="Список пользователей")
@@ -432,10 +491,94 @@ def register(dp) -> None:
                 await event.answer(notification="Пользователь не найден")
                 return
             await event.message.answer(
-                text=_build_user_card_text(item),
+                text=_build_user_card_text(item, access_registry),
                 attachments=[build_admin_user_actions_keyboard(target_user_id)],
             )
             await event.answer(notification="Карточка пользователя")
+            return
+
+        if action == "admin_user_hotel":
+            if not is_admin(user_id, admin_ids):
+                await event.answer(notification="Доступно только администратору")
+                return
+            try:
+                target_user_id = int(payload.value.strip())
+            except Exception:
+                await event.answer(notification="Некорректный user_id")
+                return
+
+            item = _find_user_item(access_registry, target_user_id)
+            if not item:
+                await event.answer(notification="Пользователь не найден")
+                return
+
+            await event.message.answer(
+                text=(
+                    f"{_build_user_card_text(item, access_registry)}\n\n"
+                    "Выберите отель для пользователя:"
+                ),
+                attachments=[
+                    build_admin_hotel_select_keyboard(
+                        target_user_id,
+                        access_registry.list_hotels(),
+                    )
+                ],
+            )
+            await _safe_answer(event, "Выбор отеля")
+            return
+
+        if action == "admin_hotel_set":
+            if not is_admin(user_id, admin_ids):
+                await event.answer(notification="Доступно только администратору")
+                return
+            raw_value = (payload.value or "").strip()
+            if ":" not in raw_value:
+                await event.answer(notification="Некорректные данные")
+                return
+            raw_user_id, raw_hotel_code = raw_value.split(":", maxsplit=1)
+            try:
+                target_user_id = int(raw_user_id.strip())
+            except Exception:
+                await event.answer(notification="Некорректный user_id")
+                return
+
+            set_status = access_registry.set_user_hotel(target_user_id, raw_hotel_code.strip())
+            if set_status == "invalid_hotel":
+                await _safe_answer(event, "Некорректный отель")
+                return
+            if set_status == "not_found":
+                await _safe_answer(event, "Пользователь не найден")
+                return
+
+            item = _find_user_item(access_registry, target_user_id)
+            if not item:
+                await _safe_answer(event, "Пользователь не найден")
+                return
+
+            hotel_label = access_registry.get_hotel_label(item.hotel_code) or "не назначен"
+            await event.message.answer(
+                text=(
+                    f"{_build_user_card_text(item, access_registry)}\n\n"
+                    f"Текущая привязка: {hotel_label}"
+                ),
+                attachments=[build_admin_user_actions_keyboard(target_user_id)],
+            )
+
+            if set_status == "updated":
+                await _safe_answer(event, "Отель обновлен")
+                try:
+                    await event._ensure_bot().send_message(
+                        user_id=target_user_id,
+                        text=f"Ваш профиль обновлен. Назначенный отель: {hotel_label}.",
+                        attachments=[_build_menu_for_user(target_user_id, cfg, access_registry)],
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to notify user about hotel update: user_id=%s",
+                        target_user_id,
+                    )
+            else:
+                await _safe_answer(event, "Отель уже назначен")
             return
 
         if action == "admin_ban":
@@ -535,12 +678,35 @@ def register(dp) -> None:
             ):
                 await event.answer(notification="Раздел доступен только пользователям")
                 return
+            hotel_features = set(
+                access_registry.get_hotel_features(access_registry.get_user_hotel(user_id))
+            )
+            if "wifi_guest_issue" not in hotel_features:
+                await event.answer(notification="Раздел недоступен для вашего профиля")
+                return
 
             await event.message.answer(
                 text=user_texts.WIFI_SCOPE_TEXT,
                 attachments=[build_wifi_scope_keyboard()],
             )
             await event.answer(notification="Проверка Wi-Fi")
+            return
+
+        if action == "tv_guest":
+            if can_view_service_functions(
+                user_id=user_id,
+                admin_ids=admin_ids,
+                specialist_ids=specialist_ids,
+            ):
+                await event.answer(notification="Раздел доступен только пользователям")
+                return
+            hotel_features = set(
+                access_registry.get_hotel_features(access_registry.get_user_hotel(user_id))
+            )
+            if "tv_guest_issue" not in hotel_features:
+                await event.answer(notification="Раздел недоступен для вашего профиля")
+                return
+            await _start_tv_escalation(event, user_id)
             return
 
         if action == "wifi_scope_one":
@@ -552,11 +718,7 @@ def register(dp) -> None:
             return
 
         if action == "wifi_scope_all":
-            await event.message.answer(
-                text=user_texts.WIFI_ESCALATE_TEXT,
-                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
-            )
-            await event.answer(notification="Передайте заявку в поддержку")
+            await _start_wifi_escalation(event, user_id)
             return
 
         if action == "wifi_device_mobile":
@@ -584,11 +746,7 @@ def register(dp) -> None:
             return
 
         if action == "wifi_auth_no":
-            await event.message.answer(
-                text=user_texts.WIFI_ESCALATE_TEXT,
-                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
-            )
-            await event.answer(notification="Передайте заявку в поддержку")
+            await _start_wifi_escalation(event, user_id)
             return
 
         if action == "wifi_resolved":
@@ -600,11 +758,7 @@ def register(dp) -> None:
             return
 
         if action == "wifi_unresolved":
-            await event.message.answer(
-                text=user_texts.WIFI_ESCALATE_TEXT,
-                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
-            )
-            await event.answer(notification="Передайте заявку в поддержку")
+            await _start_wifi_escalation(event, user_id)
             return
 
         if action == "help":
@@ -622,6 +776,8 @@ def register(dp) -> None:
                 return
 
             draft.step = "awaiting_problem_text"
+            draft.problem_text = None
+            draft.attachments = []
             await event.message.answer(text=user_texts.PROBLEM_PROMPT)
             await event.answer(notification="Введите новый текст")
             return
@@ -636,7 +792,7 @@ def register(dp) -> None:
             return
 
         if action == "confirm_send":
-            await event.answer(notification="Отправляю заявку...")
+            await _safe_answer(event, "Отправляю заявку...")
             try:
                 draft = user_flow.get(user_id)
                 if not draft.category or not draft.problem_text:
@@ -667,41 +823,67 @@ def register(dp) -> None:
                 )
 
                 group_sent = None
+                ticket_text = specialist_texts.render_group_ticket(ticket)
+                action_keyboard = build_ticket_actions_keyboard(ticket.ticket_id)
+                media_attachments = list(draft.attachments or [])
                 try:
                     group_sent = await event._ensure_bot().send_message(
                         chat_id=cfg.bot.group_chat_id,
-                        text=specialist_texts.render_group_ticket(ticket),
-                        attachments=[build_ticket_actions_keyboard(ticket.ticket_id)],
+                        text=ticket_text,
+                        attachments=[*media_attachments, action_keyboard],
+                        parse_mode=ParseMode.HTML,
                     )
                 except Exception:
                     logger.exception(
-                        "Failed to send ticket to group with attachments: ticket_id=%s user_id=%s group_chat_id=%s",
+                        "Failed to send ticket to group with media+actions: ticket_id=%s user_id=%s group_chat_id=%s",
                         ticket.ticket_id,
                         user_id,
                         cfg.bot.group_chat_id,
                     )
                     try:
-                        # Fallback for chats where rich attachments/buttons are not accepted.
-                        group_sent = await event._ensure_bot().send_message(
-                            chat_id=cfg.bot.group_chat_id,
-                            text=specialist_texts.render_group_ticket(ticket),
-                        )
+                        if media_attachments:
+                            group_sent = await event._ensure_bot().send_message(
+                                chat_id=cfg.bot.group_chat_id,
+                                text=ticket_text,
+                                attachments=media_attachments,
+                                parse_mode=ParseMode.HTML,
+                            )
+                        else:
+                            group_sent = await event._ensure_bot().send_message(
+                                chat_id=cfg.bot.group_chat_id,
+                                text=ticket_text,
+                                attachments=[action_keyboard],
+                                parse_mode=ParseMode.HTML,
+                            )
                     except Exception:
                         logger.exception(
-                            "Failed to send ticket to group without attachments: ticket_id=%s user_id=%s group_chat_id=%s",
+                            "Failed to send ticket to group with reduced attachments: ticket_id=%s user_id=%s group_chat_id=%s",
                             ticket.ticket_id,
                             user_id,
                             cfg.bot.group_chat_id,
                         )
-                        user_flow.reset(user_id)
-                        await event.message.answer(
-                            text=(
-                                f"Заявка {ticket.ticket_id} сохранена, но не отправлена в группу специалистов.\n"
-                                "Проверьте MAX_GROUP_CHAT_ID и права бота в группе."
-                            ),
-                            attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
-                        )
-                        return
+                        try:
+                            group_sent = await event._ensure_bot().send_message(
+                                chat_id=cfg.bot.group_chat_id,
+                                text=ticket_text,
+                                parse_mode=ParseMode.HTML,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Failed to send ticket to group without attachments: ticket_id=%s user_id=%s group_chat_id=%s",
+                                ticket.ticket_id,
+                                user_id,
+                                cfg.bot.group_chat_id,
+                            )
+                            user_flow.reset(user_id)
+                            await event.message.answer(
+                                text=(
+                                    f"Заявка {ticket.ticket_id} сохранена, но не отправлена в группу специалистов.\n"
+                                    "Проверьте MAX_GROUP_CHAT_ID и права бота в группе."
+                                ),
+                                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+                            )
+                            return
 
                 if not group_sent or not getattr(group_sent, "message", None):
                     logger.error(
@@ -724,13 +906,19 @@ def register(dp) -> None:
                     ticket_links.bind_group_message(
                         ticket_id=ticket.ticket_id,
                         group_message_id=group_sent.message.body.mid,
+                        primary=True,
                     )
 
                 user_flow.reset(user_id)
-                await event.message.answer(
+                user_sent = await event.message.answer(
                     text=user_texts.SUBMITTED_TEXT,
                     attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
                 )
+                if user_sent and getattr(user_sent, "message", None) and user_sent.message.body:
+                    ticket_links.bind_user_message(
+                        ticket_id=ticket.ticket_id,
+                        user_message_id=user_sent.message.body.mid,
+                    )
                 return
             except Exception:
                 logger.exception("Unhandled confirm_send error: user_id=%s", user_id)
@@ -753,6 +941,19 @@ def register(dp) -> None:
         action = payload.action
         ticket_id = payload.ticket_id
         admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
+
+        if action == "open_list":
+            if not can_view_service_functions(
+                user_id=actor_id,
+                admin_ids=admin_ids,
+                specialist_ids=specialist_ids,
+            ):
+                await event.answer(notification=specialist_texts.FORBIDDEN_TEXT)
+                return
+            open_tickets = await tickets.list_open_tickets(limit=50)
+            await event.message.answer(text=_build_open_tickets_text(open_tickets))
+            await event.answer(notification="Список открытых заявок")
+            return
 
         if action == "take" and not can_take_ticket(
             user_id=actor_id,
@@ -829,5 +1030,6 @@ def register(dp) -> None:
         await event.message.edit(
             text=specialist_texts.render_group_ticket(result.ticket),
             attachments=[build_ticket_actions_keyboard(result.ticket.ticket_id)],
+            parse_mode=ParseMode.HTML,
         )
         await event.answer(notification="Статус обновлён")

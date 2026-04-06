@@ -18,6 +18,7 @@ class RegisteredUser:
     user_id: int
     user_name: str
     phone: str | None
+    hotel_code: str | None
     role: str
     status: str
     created_at: str
@@ -25,6 +26,14 @@ class RegisteredUser:
 
 
 ALLOWED_ROLES = ("user", "IT specialist", "admin")
+HOTEL_LABELS: dict[str, str] = {
+    "jamaica": "Отель Джамайка",
+    "old_anapa": "Отель Старинная Анапа",
+}
+HOTEL_FEATURES: dict[str, tuple[str, ...]] = {
+    "jamaica": ("wifi_guest_issue", "tv_guest_issue"),
+    "old_anapa": ("wifi_guest_issue",),
+}
 
 
 class UserAccessRegistry:
@@ -137,6 +146,7 @@ class UserAccessRegistry:
             data["users"][key] = {
                 "user_name": str(pending_data.get("user_name", f"ID {user_id}")),
                 "phone": pending_data.get("phone"),
+                "hotel_code": None,
                 "role": normalized_role,
                 "status": "active",
                 "created_at": str(pending_data.get("requested_at", now)),
@@ -176,6 +186,7 @@ class UserAccessRegistry:
                         user_id=user_id,
                         user_name=str(item.get("user_name", f"ID {user_id}")),
                         phone=phone_value,
+                        hotel_code=self._normalize_hotel(str(item.get("hotel_code", "") or "")),
                         role=role,
                         status=str(item.get("status", "active")),
                         created_at=str(item.get("created_at", "-")),
@@ -194,6 +205,7 @@ class UserAccessRegistry:
                         user_id=user_id,
                         user_name=f"ID {user_id}",
                         phone=None,
+                        hotel_code=None,
                         role="user",
                         status="active",
                         created_at="-",
@@ -239,6 +251,7 @@ class UserAccessRegistry:
                 data["users"][key] = {
                     "user_name": f"ID {user_id}",
                     "phone": None,
+                    "hotel_code": None,
                     "role": "user",
                     "status": "active",
                     "created_at": now,
@@ -279,6 +292,54 @@ class UserAccessRegistry:
             self._save(data)
             return "deleted"
 
+    def get_user_hotel(self, user_id: int) -> str | None:
+        with self._lock:
+            data = self._load()
+            item = data["users"].get(str(user_id))
+            if not item:
+                return None
+            return self._normalize_hotel(str(item.get("hotel_code", "") or ""))
+
+    def set_user_hotel(self, user_id: int, hotel_code: str | None) -> str:
+        with self._lock:
+            raw_hotel = str(hotel_code or "").strip()
+            normalized_hotel = self._normalize_hotel(raw_hotel)
+            if raw_hotel and raw_hotel.lower() not in {"none", "-", "null"} and not normalized_hotel:
+                return "invalid_hotel"
+
+            data = self._load()
+            key = str(user_id)
+            user_data = data["users"].get(key)
+            if not user_data:
+                return "not_found"
+
+            current_hotel = self._normalize_hotel(str(user_data.get("hotel_code", "") or ""))
+            if current_hotel == normalized_hotel:
+                return "no_change"
+
+            user_data["hotel_code"] = normalized_hotel
+            user_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._save(data)
+            return "updated"
+
+    @staticmethod
+    def list_hotels() -> tuple[tuple[str, str], ...]:
+        return tuple((code, HOTEL_LABELS[code]) for code in HOTEL_LABELS)
+
+    @staticmethod
+    def get_hotel_label(hotel_code: str | None) -> str | None:
+        normalized = UserAccessRegistry._normalize_hotel(hotel_code or "")
+        if not normalized:
+            return None
+        return HOTEL_LABELS.get(normalized)
+
+    @staticmethod
+    def get_hotel_features(hotel_code: str | None) -> tuple[str, ...]:
+        normalized = UserAccessRegistry._normalize_hotel(hotel_code or "")
+        if not normalized:
+            return ()
+        return HOTEL_FEATURES.get(normalized, ())
+
     def list_pending(self) -> list[PendingAccessRequest]:
         with self._lock:
             data = self._load()
@@ -310,3 +371,17 @@ class UserAccessRegistry:
         if raw in {"admin", "administrator"}:
             return "admin"
         return None
+
+    @staticmethod
+    def _normalize_hotel(hotel_code: str) -> str | None:
+        raw = (hotel_code or "").strip().lower()
+        if raw in {"", "none", "-", "null"}:
+            return None
+        if raw in {"jamaika", "джамайка"}:
+            return "jamaica"
+        if raw in {"oldanapa", "old-anapa", "старинная анапа"}:
+            return "old_anapa"
+        if raw in HOTEL_LABELS:
+            return raw
+        return None
+

@@ -53,6 +53,27 @@ class UserAccessRegistryTests(unittest.TestCase):
             self.assertEqual(registry.request_access(4004, "Role User", phone="+70000000004"), "created")
             self.assertEqual(registry.approve(4004, role="unknown"), "invalid_role")
 
+    def test_hotel_assignment_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "registry.json"
+            registry = UserAccessRegistry(str(path))
+
+            self.assertEqual(registry.request_access(5005, "Hotel User", phone="+70000000005"), "created")
+            self.assertEqual(registry.approve(5005, role="user"), "approved")
+
+            self.assertIsNone(registry.get_user_hotel(5005))
+            self.assertEqual(registry.set_user_hotel(5005, "unknown"), "invalid_hotel")
+            self.assertEqual(registry.set_user_hotel(5005, "jamaica"), "updated")
+            self.assertEqual(registry.get_user_hotel(5005), "jamaica")
+            self.assertEqual(registry.get_hotel_label("jamaica"), "Отель Джамайка")
+            self.assertEqual(
+                registry.get_hotel_features("jamaica"),
+                ("wifi_guest_issue", "tv_guest_issue"),
+            )
+            self.assertEqual(registry.set_user_hotel(5005, "jamaica"), "no_change")
+            self.assertEqual(registry.set_user_hotel(5005, "none"), "updated")
+            self.assertIsNone(registry.get_user_hotel(5005))
+
 
 if __name__ == "__main__":
     unittest.main()

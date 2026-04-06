@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -6,6 +7,7 @@ class UserDraft:
     category: str | None = None
     problem_text: str | None = None
     step: str = "idle"
+    attachments: list[Any] = field(default_factory=list)
 
 
 class UserFlowService:
@@ -23,6 +25,7 @@ class UserFlowService:
         draft.step = "awaiting_category"
         draft.category = None
         draft.problem_text = None
+        draft.attachments = []
         return draft
 
     def set_category(self, user_id: int, category: str) -> UserDraft:
@@ -35,5 +38,22 @@ class UserFlowService:
         draft = self.get(user_id)
         draft.problem_text = text
         draft.step = "awaiting_confirmation"
+        return draft
+
+    def append_problem_chunk(
+        self,
+        user_id: int,
+        text: str | None = None,
+        attachments: list[Any] | None = None,
+    ) -> UserDraft:
+        draft = self.get(user_id)
+        normalized = (text or "").strip()
+        if normalized:
+            if draft.problem_text:
+                draft.problem_text = f"{draft.problem_text}\n{normalized}"
+            else:
+                draft.problem_text = normalized
+        if attachments:
+            draft.attachments.extend(attachments)
         return draft
 

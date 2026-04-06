@@ -1,7 +1,10 @@
-﻿import logging
+﻿import asyncio
+import logging
 import re
 from datetime import datetime
+from typing import Any
 
+from maxapi.enums.parse_mode import ParseMode
 from maxapi.types import BotStarted, MessageCreated
 
 from app.admin.runtime import get_user_access_registry
@@ -16,7 +19,6 @@ from app.admin.services.access_service import (
 from app.common.user_helpers import get_first_name, get_full_name
 from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_admin_request_keyboard,
-    build_confirm_keyboard,
     build_main_menu_keyboard,
     build_registration_keyboard,
     build_ticket_actions_keyboard,
@@ -43,6 +45,21 @@ from config.config import get_config
 
 logger = logging.getLogger(__name__)
 _PHONE_PATTERN = re.compile(r"TEL[^:]*:([+0-9\-()\s]+)")
+_TICKET_MEDIA_ATTACHMENT_MARKERS = (
+    "image",
+    "photo",
+    "video",
+    "file",
+    "document",
+    "audio",
+)
+_NON_FORWARDABLE_ATTACHMENT_MARKERS = (
+    "contact",
+    "inline_keyboard",
+    "reply_keyboard",
+    "button",
+    "sticker",
+)
 
 
 def _resolve_replied_mid(event: MessageCreated) -> str | None:
@@ -59,20 +76,10 @@ def _render_open_tickets(lines: list[str]) -> str:
 
 
 def _build_menu_for_user(user_id: int, cfg):
-    can_view_service = can_view_service_functions(
+    return _build_menu_for_user_with_registry(
         user_id=user_id,
-        admin_ids=cfg.bot.admin_ids,
-        specialist_ids=cfg.bot.it_specialist_ids,
-    )
-    return build_main_menu_keyboard(
-        can_use_network_tools=can_use_network_tools(
-            user_id=user_id,
-            admin_ids=cfg.bot.admin_ids,
-            specialist_ids=cfg.bot.it_specialist_ids,
-        ),
-        can_view_service_functions=can_view_service,
-        is_admin=is_admin(user_id, cfg.bot.admin_ids),
-        can_use_wifi_help=not can_view_service,
+        cfg=cfg,
+        access_registry=get_user_access_registry(),
     )
 
 
@@ -92,7 +99,13 @@ def _build_menu_for_user_with_registry(user_id: int, cfg, access_registry):
         admin_ids=admin_ids,
         specialist_ids=specialist_ids,
     )
+    hotel_code = access_registry.get_user_hotel(user_id)
+    hotel_features = set(access_registry.get_hotel_features(hotel_code))
+    is_service_actor = can_view_service
     return build_main_menu_keyboard(
+        can_create_ticket=True,
+        can_view_my_tickets=is_service_actor,
+        can_view_help=is_service_actor,
         can_use_network_tools=can_use_network_tools(
             user_id=user_id,
             admin_ids=admin_ids,
@@ -100,7 +113,8 @@ def _build_menu_for_user_with_registry(user_id: int, cfg, access_registry):
         ),
         can_view_service_functions=can_view_service,
         is_admin=is_admin(user_id, admin_ids),
-        can_use_wifi_help=not can_view_service,
+        can_use_wifi_help=not is_service_actor and "wifi_guest_issue" in hotel_features,
+        can_use_tv_help=not is_service_actor and "tv_guest_issue" in hotel_features,
     )
 
 
@@ -140,6 +154,18 @@ def _extract_shared_phone(event: MessageCreated) -> str | None:
     return None
 
 
+def _extract_ticket_media_attachments(event: MessageCreated) -> list[Any]:
+    collected: list[Any] = []
+    attachments = list(getattr(event.message.body, "attachments", None) or [])
+    for attachment in attachments:
+        att_type = str(getattr(attachment, "type", "")).lower()
+        if any(marker in att_type for marker in _NON_FORWARDABLE_ATTACHMENT_MARKERS):
+            continue
+        if any(marker in att_type for marker in _TICKET_MEDIA_ATTACHMENT_MARKERS):
+            collected.append(attachment)
+    return collected
+
+
 def register(dp) -> None:
     cfg = get_config()
     categories = get_ticket_categories()
@@ -150,6 +176,81 @@ def register(dp) -> None:
     network_tools = get_network_tools_service()
     access_registry = get_user_access_registry()
     group_chat_id = cfg.bot.group_chat_id
+    problem_collect_delay_seconds = 20
+    problem_collect_tasks: dict[int, asyncio.Task[None]] = {}
+
+    def _cancel_problem_collect_task(user_id: int) -> None:
+        task = problem_collect_tasks.get(user_id)
+        if task is None:
+            return
+        if task is asyncio.current_task():
+            return
+        problem_collect_tasks.pop(user_id, None)
+        if not task.done():
+            task.cancel()
+
+    def _get_registered_user_profile(user_id: int) -> tuple[str, str | None]:
+        for item in access_registry.list_users():
+            if item.user_id == user_id:
+                return item.user_name, item.phone
+        return f"ID {user_id}", None
+
+    async def _send_delayed_submit(user_id: int, bot) -> None:
+        try:
+            await asyncio.sleep(problem_collect_delay_seconds)
+            draft = user_flow.get(user_id)
+            if draft.step not in {
+                "awaiting_problem_text",
+                "awaiting_wifi_escalation_text",
+                "awaiting_tv_escalation_text",
+            }:
+                logger.info(
+                    "Auto-submit skipped by step: user_id=%s step=%s",
+                    user_id,
+                    draft.step,
+                )
+                return
+            if not draft.category or not draft.problem_text:
+                logger.info(
+                    "Auto-submit skipped by missing data: user_id=%s category=%s has_text=%s",
+                    user_id,
+                    draft.category,
+                    bool(draft.problem_text),
+                )
+                return
+            requester_name, requester_phone = _get_registered_user_profile(user_id)
+            logger.info(
+                "Auto-submit started: user_id=%s category=%s has_attachments=%s",
+                user_id,
+                draft.category,
+                bool(draft.attachments),
+            )
+            await _submit_draft_ticket_by_bot(
+                bot=bot,
+                sender_id=user_id,
+                requester_name=requester_name,
+                requester_phone=requester_phone,
+                requester_department=None,
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("Failed to auto-submit delayed draft: user_id=%s", user_id)
+        finally:
+            current_task = problem_collect_tasks.get(user_id)
+            if current_task is asyncio.current_task():
+                problem_collect_tasks.pop(user_id, None)
+
+    def _schedule_problem_submit(user_id: int, bot) -> None:
+        _cancel_problem_collect_task(user_id)
+        logger.info(
+            "Auto-submit timer scheduled: user_id=%s delay=%ss",
+            user_id,
+            problem_collect_delay_seconds,
+        )
+        problem_collect_tasks[user_id] = asyncio.create_task(
+            _send_delayed_submit(user_id, bot)
+        )
 
     async def _notify_admins_about_access_request(
         event: MessageCreated,
@@ -198,18 +299,19 @@ def register(dp) -> None:
             )
         return delivered
 
-    async def _submit_draft_ticket(event: MessageCreated, sender_id: int) -> None:
-        sender = event.message.sender
+    async def _submit_draft_ticket_by_bot(
+        *,
+        bot,
+        sender_id: int,
+        requester_name: str,
+        requester_phone: str | None,
+        requester_department: str | None,
+    ) -> bool:
+        _cancel_problem_collect_task(sender_id)
         draft = user_flow.get(sender_id)
         if not draft.category or not draft.problem_text:
-            await event.message.answer(
-                text="Не хватает данных для отправки. Создайте обращение заново.",
-                attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
-            )
-            return
+            return False
 
-        _, requester_name = get_sender_identity(sender, fallback_name="Пользователь")
-        requester_phone, requester_department = get_optional_contact_details(sender)
         ticket = await tickets.create_ticket(
             requester_user_id=sender_id,
             requester_name=requester_name,
@@ -220,40 +322,68 @@ def register(dp) -> None:
         )
 
         group_sent = None
+        ticket_text = specialist_texts.render_group_ticket(ticket)
+        action_keyboard = build_ticket_actions_keyboard(ticket.ticket_id)
+        media_attachments = list(draft.attachments or [])
         try:
-            group_sent = await event._ensure_bot().send_message(
+            group_sent = await bot.send_message(
                 chat_id=cfg.bot.group_chat_id,
-                text=specialist_texts.render_group_ticket(ticket),
-                attachments=[build_ticket_actions_keyboard(ticket.ticket_id)],
+                text=ticket_text,
+                attachments=[*media_attachments, action_keyboard],
+                parse_mode=ParseMode.HTML,
             )
         except Exception:
             logger.exception(
-                "Message fallback failed with attachments: ticket_id=%s user_id=%s group_chat_id=%s",
+                "Message fallback failed with media+actions: ticket_id=%s user_id=%s group_chat_id=%s",
                 ticket.ticket_id,
                 sender_id,
                 cfg.bot.group_chat_id,
             )
             try:
-                group_sent = await event._ensure_bot().send_message(
-                    chat_id=cfg.bot.group_chat_id,
-                    text=specialist_texts.render_group_ticket(ticket),
-                )
+                if media_attachments:
+                    group_sent = await bot.send_message(
+                        chat_id=cfg.bot.group_chat_id,
+                        text=ticket_text,
+                        attachments=media_attachments,
+                        parse_mode=ParseMode.HTML,
+                    )
+                else:
+                    group_sent = await bot.send_message(
+                        chat_id=cfg.bot.group_chat_id,
+                        text=ticket_text,
+                        attachments=[action_keyboard],
+                        parse_mode=ParseMode.HTML,
+                    )
             except Exception:
                 logger.exception(
-                    "Message fallback failed without attachments: ticket_id=%s user_id=%s group_chat_id=%s",
+                    "Message fallback failed with reduced attachments: ticket_id=%s user_id=%s group_chat_id=%s",
                     ticket.ticket_id,
                     sender_id,
                     cfg.bot.group_chat_id,
                 )
-                user_flow.reset(sender_id)
-                await event.message.answer(
-                    text=(
-                        f"Заявка {ticket.ticket_id} сохранена, но не отправлена в группу специалистов.\n"
-                        "Проверьте MAX_GROUP_CHAT_ID и права бота в группе."
-                    ),
-                    attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
-                )
-                return
+                try:
+                    group_sent = await bot.send_message(
+                        chat_id=cfg.bot.group_chat_id,
+                        text=ticket_text,
+                        parse_mode=ParseMode.HTML,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Message fallback failed without attachments: ticket_id=%s user_id=%s group_chat_id=%s",
+                        ticket.ticket_id,
+                        sender_id,
+                        cfg.bot.group_chat_id,
+                    )
+                    user_flow.reset(sender_id)
+                    await bot.send_message(
+                        user_id=sender_id,
+                        text=(
+                            f"Заявка {ticket.ticket_id} сохранена, но не отправлена в группу специалистов.\n"
+                            "Проверьте MAX_GROUP_CHAT_ID и права бота в группе."
+                        ),
+                        attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
+                    )
+                    return False
 
         if not group_sent or not getattr(group_sent, "message", None):
             logger.error(
@@ -263,26 +393,194 @@ def register(dp) -> None:
                 cfg.bot.group_chat_id,
             )
             user_flow.reset(sender_id)
-            await event.message.answer(
+            await bot.send_message(
+                user_id=sender_id,
                 text=(
                     f"Заявка {ticket.ticket_id} сохранена, но API не подтвердил отправку в группу.\n"
                     "Проверьте MAX_GROUP_CHAT_ID и доступ бота к чату."
                 ),
                 attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
             )
-            return
+            return False
 
         if group_sent.message and group_sent.message.body:
             ticket_links.bind_group_message(
                 ticket_id=ticket.ticket_id,
                 group_message_id=group_sent.message.body.mid,
+                primary=True,
             )
 
         user_flow.reset(sender_id)
-        await event.message.answer(
+        user_sent = await bot.send_message(
+            user_id=sender_id,
             text=user_texts.SUBMITTED_TEXT,
             attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
         )
+        if user_sent and getattr(user_sent, "message", None) and user_sent.message.body:
+            ticket_links.bind_user_message(
+                ticket_id=ticket.ticket_id,
+                user_message_id=user_sent.message.body.mid,
+            )
+        return True
+
+    async def _submit_draft_ticket(event: MessageCreated, sender_id: int) -> None:
+        draft = user_flow.get(sender_id)
+        if not draft.category or not draft.problem_text:
+            await event.message.answer(
+                text="Не хватает данных для отправки. Создайте обращение заново.",
+                attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
+            )
+            return
+
+        sender = event.message.sender
+        _, requester_name = get_sender_identity(sender, fallback_name="Пользователь")
+        requester_phone, requester_department = get_optional_contact_details(sender)
+        await _submit_draft_ticket_by_bot(
+            bot=event._ensure_bot(),
+            sender_id=sender_id,
+            requester_name=requester_name,
+            requester_phone=requester_phone,
+            requester_department=requester_department,
+        )
+
+    async def _relay_group_reply_to_user(
+        event: MessageCreated,
+        *,
+        actor_id: int,
+        actor_name: str,
+        text: str,
+        attachments: list[Any],
+    ) -> bool:
+        reply_mid = _resolve_replied_mid(event)
+        if not reply_mid:
+            return False
+
+        ticket_id = ticket_links.get_ticket_id_by_group_message(reply_mid)
+        if not ticket_id:
+            return False
+
+        ticket = await tickets.get_ticket(ticket_id)
+        if ticket is None:
+            await event.message.answer(specialist_texts.NOT_FOUND_TEXT)
+            return True
+
+        if not text and not attachments:
+            return True
+
+        relay_text = (
+            f"Ответ по заявке {ticket.ticket_id}\n"
+            f"Специалист: {actor_name}\n"
+            f"Сообщение:\n{text or '[вложение]'}"
+        )
+        try:
+            if attachments:
+                user_sent = await event._ensure_bot().send_message(
+                    user_id=ticket.user_id,
+                    text=relay_text,
+                    attachments=attachments,
+                )
+            else:
+                user_sent = await event._ensure_bot().send_message(
+                    user_id=ticket.user_id,
+                    text=relay_text,
+                )
+        except Exception:
+            logger.exception(
+                "Failed to relay group reply to user: ticket_id=%s actor_id=%s",
+                ticket.ticket_id,
+                actor_id,
+            )
+            await event.message.answer("Не удалось доставить сообщение пользователю.")
+            return True
+
+        if user_sent and getattr(user_sent, "message", None) and user_sent.message.body:
+            ticket_links.bind_user_message(
+                ticket_id=ticket.ticket_id,
+                user_message_id=user_sent.message.body.mid,
+            )
+
+        group_mid = getattr(getattr(event.message, "body", None), "mid", None)
+        if group_mid:
+            ticket_links.bind_group_message(ticket_id=ticket.ticket_id, group_message_id=group_mid)
+
+        logger.info(
+            "Group reply relayed to user: ticket_id=%s actor_id=%s user_id=%s",
+            ticket.ticket_id,
+            actor_id,
+            ticket.user_id,
+        )
+        return True
+
+    async def _relay_user_reply_to_group(
+        event: MessageCreated,
+        *,
+        sender_id: int,
+        sender_name: str,
+        text: str,
+        attachments: list[Any],
+    ) -> bool:
+        reply_mid = _resolve_replied_mid(event)
+        if not reply_mid:
+            return False
+
+        ticket_id = ticket_links.get_ticket_id_by_user_message(reply_mid)
+        if not ticket_id:
+            return False
+
+        ticket = await tickets.get_ticket(ticket_id)
+        if ticket is None:
+            await event.message.answer("Не удалось определить заявку для ответа.")
+            return True
+
+        if sender_id != ticket.user_id:
+            await event.message.answer("Ответ по заявке может отправлять только её автор.")
+            return True
+
+        if not text and not attachments:
+            return True
+
+        relay_text = (
+            f"Сообщение от пользователя по заявке {ticket.ticket_id}\n"
+            f"Пользователь: {sender_name}\n"
+            f"Сообщение:\n{text or '[вложение]'}"
+        )
+        try:
+            if attachments:
+                group_sent = await event._ensure_bot().send_message(
+                    chat_id=cfg.bot.group_chat_id,
+                    text=relay_text,
+                    attachments=attachments,
+                )
+            else:
+                group_sent = await event._ensure_bot().send_message(
+                    chat_id=cfg.bot.group_chat_id,
+                    text=relay_text,
+                )
+        except Exception:
+            logger.exception(
+                "Failed to relay user reply to group: ticket_id=%s user_id=%s",
+                ticket.ticket_id,
+                sender_id,
+            )
+            await event.message.answer("Не удалось доставить сообщение в группу поддержки.")
+            return True
+
+        if group_sent and getattr(group_sent, "message", None) and group_sent.message.body:
+            ticket_links.bind_group_message(
+                ticket_id=ticket.ticket_id,
+                group_message_id=group_sent.message.body.mid,
+            )
+
+        user_mid = getattr(getattr(event.message, "body", None), "mid", None)
+        if user_mid:
+            ticket_links.bind_user_message(ticket_id=ticket.ticket_id, user_message_id=user_mid)
+
+        logger.info(
+            "User reply relayed to group: ticket_id=%s user_id=%s",
+            ticket.ticket_id,
+            sender_id,
+        )
+        return True
 
     async def _submit_access_request(event: MessageCreated, sender_id: int) -> bool:
         phone = _extract_shared_phone(event)
@@ -373,17 +671,36 @@ def register(dp) -> None:
 
     @dp.message_created()
     async def handle_all_messages(event: MessageCreated):
-        if event.message.recipient.chat_type != "dialog":
-            if event.message.recipient.chat_id != group_chat_id:
-                return
+        sender = event.message.sender
+        if bool(getattr(sender, "is_bot", False)):
+            return
 
+        recipient_chat_id = int(event.message.recipient.chat_id)
+
+        if recipient_chat_id == group_chat_id:
             text = normalize_ticket_text(event.message.body.text, "")
-            if not text.startswith("/"):
-                return
+            message_attachments = _extract_ticket_media_attachments(event)
 
-            actor = event.message.sender
+            actor = sender
             actor_id, actor_name = get_sender_identity(actor, fallback_name="Специалист")
             admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
+
+            if not text.startswith("/"):
+                if can_view_service_functions(
+                    user_id=actor_id,
+                    admin_ids=admin_ids,
+                    specialist_ids=specialist_ids,
+                ):
+                    relayed = await _relay_group_reply_to_user(
+                        event,
+                        actor_id=actor_id,
+                        actor_name=actor_name,
+                        text=text,
+                        attachments=message_attachments,
+                    )
+                    if relayed:
+                        return
+                return
 
             if text.startswith("/open"):
                 if not can_view_service_functions(
@@ -524,6 +841,7 @@ def register(dp) -> None:
                     message_id=group_mid,
                     text=specialist_texts.render_group_ticket(result.ticket),
                     attachments=[build_ticket_actions_keyboard(result.ticket.ticket_id)],
+                    parse_mode=ParseMode.HTML,
                 )
 
             await event.message.answer(
@@ -531,8 +849,10 @@ def register(dp) -> None:
             )
             return
 
-        sender = event.message.sender
-        sender_id, _ = get_sender_identity(sender, fallback_name="Пользователь")
+        if recipient_chat_id < 0:
+            return
+
+        sender_id, sender_name = get_sender_identity(sender, fallback_name="Пользователь")
         approved_user_ids = access_registry.get_approved_ids()
         banned_user_ids = access_registry.get_banned_ids()
         if not _has_user_access(
@@ -549,6 +869,7 @@ def register(dp) -> None:
             raw_text=event.message.body.text,
             empty_text_fallback="",
         )
+        message_attachments = _extract_ticket_media_attachments(event)
 
         admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
         if can_use_network_tools(
@@ -601,6 +922,17 @@ def register(dp) -> None:
                 network_session.reset(sender_id)
                 return
 
+        if not is_command_text(text):
+            relayed = await _relay_user_reply_to_group(
+                event,
+                sender_id=sender_id,
+                sender_name=sender_name,
+                text=text,
+                attachments=message_attachments,
+            )
+            if relayed:
+                return
+
         draft = user_flow.get(sender_id)
         if is_command_text(text):
             return
@@ -611,6 +943,32 @@ def register(dp) -> None:
             specialist_ids=specialist_ids,
         )
 
+        if draft.step == "awaiting_wifi_escalation_text":
+            chunk_text = text if text and not text.startswith("/") else None
+            if not chunk_text and not message_attachments:
+                return
+            draft = user_flow.append_problem_chunk(
+                sender_id,
+                text=chunk_text,
+                attachments=message_attachments,
+            )
+            draft.step = "awaiting_wifi_escalation_text"
+            _schedule_problem_submit(sender_id, event._ensure_bot())
+            return
+
+        if draft.step == "awaiting_tv_escalation_text":
+            chunk_text = text if text and not text.startswith("/") else None
+            if not chunk_text and not message_attachments:
+                return
+            draft = user_flow.append_problem_chunk(
+                sender_id,
+                text=chunk_text,
+                attachments=message_attachments,
+            )
+            draft.step = "awaiting_tv_escalation_text"
+            _schedule_problem_submit(sender_id, event._ensure_bot())
+            return
+
         if draft.step == "awaiting_problem_text":
             if not draft.category:
                 user_flow.begin_create(sender_id)
@@ -620,40 +978,37 @@ def register(dp) -> None:
                 )
                 return
 
-            draft = user_flow.set_problem_text(sender_id, text)
-            await event.message.answer(
-                text=user_texts.confirm_prompt(
-                    draft.category or "Не выбрана",
-                    draft.problem_text or "",
-                ),
-                attachments=[build_confirm_keyboard()],
+            chunk_text = text if text and not text.startswith("/") else None
+            if not chunk_text and not message_attachments:
+                return
+            draft = user_flow.append_problem_chunk(
+                sender_id,
+                text=chunk_text,
+                attachments=message_attachments,
             )
+            draft.step = "awaiting_problem_text"
+            _schedule_problem_submit(sender_id, event._ensure_bot())
             return
 
         if draft.step == "awaiting_confirmation":
             normalized = text.strip().lower()
-            if normalized in {"отправить", "send", "/send", "подтвердить", "ok"}:
-                logger.info("Submitting ticket from message fallback: user_id=%s", sender_id)
-                await _submit_draft_ticket(event, sender_id)
-                return
-            if normalized in {"изменить", "переписать", "rewrite"}:
-                draft.step = "awaiting_problem_text"
-                await event.message.answer(
-                    text=user_texts.PROBLEM_PROMPT,
-                    attachments=[build_confirm_keyboard()],
-                )
-                return
             if normalized in {"отмена", "cancel", "/cancel"}:
+                _cancel_problem_collect_task(sender_id)
                 user_flow.reset(sender_id)
                 await event.message.answer(
                     text=user_texts.CANCELLED_TEXT,
                     attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
                 )
                 return
-            await event.message.answer(
-                text="Нажмите «Отправить» или отправьте текстом: Отправить / Отмена.",
-                attachments=[build_confirm_keyboard()],
-            )
+            chunk_text = text if text and not text.startswith("/") else None
+            if chunk_text or message_attachments:
+                draft = user_flow.append_problem_chunk(
+                    sender_id,
+                    text=chunk_text,
+                    attachments=message_attachments,
+                )
+                draft.step = "awaiting_problem_text"
+                _schedule_problem_submit(sender_id, event._ensure_bot())
             return
 
         if draft.step == "awaiting_category":
@@ -672,14 +1027,16 @@ def register(dp) -> None:
 
         user_flow.begin_create(sender_id)
 
-        if text:
+        if text or message_attachments:
             fallback_category = categories[-1]
             user_flow.set_category(sender_id, fallback_category)
-            user_flow.set_problem_text(sender_id, text)
-            await event.message.answer(
-                text=user_texts.confirm_prompt(fallback_category, text),
-                attachments=[build_confirm_keyboard()],
+            draft = user_flow.append_problem_chunk(
+                sender_id,
+                text=text if text and not text.startswith("/") else None,
+                attachments=message_attachments,
             )
+            draft.step = "awaiting_problem_text"
+            _schedule_problem_submit(sender_id, event._ensure_bot())
             return
 
         requester_phone, requester_department = get_optional_contact_details(sender)
@@ -690,4 +1047,5 @@ def register(dp) -> None:
             ),
             attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
         )
+
 

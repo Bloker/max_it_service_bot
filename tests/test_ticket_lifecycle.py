@@ -55,6 +55,30 @@ class TicketLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(t2.ticket_id, ids)
         self.assertNotIn(t1.ticket_id, ids)
 
+    async def test_list_user_tickets_excludes_closed_by_default(self) -> None:
+        t1 = await self.service.create_ticket(101, 'User', 'cat', 'open ticket', None, None)
+        t2 = await self.service.create_ticket(101, 'User', 'cat', 'closed ticket', None, None)
+        await self.service.close_ticket(
+            t2.ticket_id,
+            actor_user_id=777,
+            actor_name='Admin',
+            admin_ids=(777,),
+        )
+
+        tickets = await self.service.list_user_tickets(user_id=101, limit=20)
+        ids = {ticket.ticket_id for ticket in tickets}
+        self.assertIn(t1.ticket_id, ids)
+        self.assertNotIn(t2.ticket_id, ids)
+
+        all_tickets = await self.service.list_user_tickets(
+            user_id=101,
+            limit=20,
+            include_closed=True,
+        )
+        all_ids = {ticket.ticket_id for ticket in all_tickets}
+        self.assertIn(t1.ticket_id, all_ids)
+        self.assertIn(t2.ticket_id, all_ids)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -29,4 +29,4 @@ async def main() -> None:
         logger.warning("Ошибка удаления webhook: %s", exc)
 
     logger.info("Бот запущен и ожидает сообщений")
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, skip_updates=cfg.bot.skip_updates_on_start)

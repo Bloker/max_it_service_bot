@@ -11,40 +11,6 @@ def build_network_menu_keyboard():
                     text="Ping",
                     payload=NetworkMenuPayload(action="tool", value="ping").pack(),
                 ),
-                CallbackButton(
-                    text="DNS lookup",
-                    payload=NetworkMenuPayload(action="tool", value="dns").pack(),
-                ),
-            ],
-            [
-                CallbackButton(
-                    text="Host check",
-                    payload=NetworkMenuPayload(action="tool", value="host_check").pack(),
-                ),
-                CallbackButton(
-                    text="Traceroute",
-                    payload=NetworkMenuPayload(action="tool", value="traceroute").pack(),
-                ),
-            ],
-            [
-                CallbackButton(
-                    text="NSLookup",
-                    payload=NetworkMenuPayload(action="tool", value="nslookup").pack(),
-                ),
-                CallbackButton(
-                    text="Whois",
-                    payload=NetworkMenuPayload(action="tool", value="whois").pack(),
-                ),
-            ],
-            [
-                CallbackButton(
-                    text="Wi-Fi шаблоны",
-                    payload=NetworkMenuPayload(action="wifi").pack(),
-                ),
-                CallbackButton(
-                    text="Device шаблоны",
-                    payload=NetworkMenuPayload(action="device_menu").pack(),
-                ),
             ],
             [
                 CallbackButton(

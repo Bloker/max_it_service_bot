@@ -1,21 +1,24 @@
-﻿from app.helpdesk.models.ticket import Ticket
+from html import escape
+
+from app.helpdesk.models.ticket import Ticket
 
 
 def render_group_ticket(ticket: Ticket) -> str:
-    assignee = ticket.assignee_name or "не назначен"
-    phone = ticket.requester_phone or "-"
-    department = ticket.requester_department or "-"
+    assignee = escape(ticket.assignee_name or "не назначен")
+    status = escape(ticket.status.value)
+    category = escape(ticket.category)
+    requester_name = escape(ticket.requester_name or "Пользователь")
+    phone = escape(ticket.requester_phone or "не указан")
+    text = escape(ticket.text)
     return (
         "🆘 Заявка IT Help Desk\n"
-        f"ID: {ticket.ticket_id}\n"
-        f"Статус: {ticket.status.value}\n"
-        f"Исполнитель: {assignee}\n"
-        f"Категория: {ticket.category}\n"
-        f"Пользователь: {ticket.requester_name} (id: {ticket.requester_user_id})\n"
-        f"Телефон: {phone}\n"
-        f"Подразделение: {department}\n"
-        "Описание:\n"
-        f"{ticket.text}"
+        f"ID: {escape(ticket.ticket_id)}\n"
+        f"Статус: <b>{status}</b>\n"
+        f"Исполнитель: <b>{assignee}</b>\n"
+        f"Категория: {category}\n"
+        f"Пользователь: {requester_name} (тел.: {phone})\n"
+        "\nОписание:\n"
+        f"{text}"
     )
 
 
