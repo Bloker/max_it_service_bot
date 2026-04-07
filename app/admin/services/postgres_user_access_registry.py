@@ -456,25 +456,32 @@ class PostgresUserAccessRegistry:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT u.id, h.code AS current_hotel
-                    FROM auth.users u
-                    LEFT JOIN auth.user_hotel_memberships hm
-                      ON hm.user_id = u.id AND hm.valid_to IS NULL
-                    LEFT JOIN auth.hotels h ON h.id = hm.hotel_id
-                    WHERE u.external_user_id = %s
-                    ORDER BY hm.valid_from DESC NULLS LAST
-                    LIMIT 1
+                    SELECT id
+                    FROM auth.users
+                    WHERE external_user_id = %s
                     FOR UPDATE
                     """,
                     (user_id,),
                 )
-                row = cur.fetchone()
-                if row is None:
+                user_row = cur.fetchone()
+                if user_row is None:
                     conn.commit()
                     return "not_found"
+                internal_user_id = int(user_row["id"])
 
-                internal_user_id = int(row["id"])
-                current_hotel = self._normalize_hotel(str(row.get("current_hotel") or ""))
+                cur.execute(
+                    """
+                    SELECT h.code AS current_hotel
+                    FROM auth.user_hotel_memberships hm
+                    JOIN auth.hotels h ON h.id = hm.hotel_id
+                    WHERE hm.user_id = %s AND hm.valid_to IS NULL
+                    ORDER BY hm.valid_from DESC
+                    LIMIT 1
+                    """,
+                    (internal_user_id,),
+                )
+                hotel_row = cur.fetchone()
+                current_hotel = self._normalize_hotel(str((hotel_row or {}).get("current_hotel") or ""))
                 if current_hotel == normalized_hotel:
                     conn.commit()
                     return "no_change"

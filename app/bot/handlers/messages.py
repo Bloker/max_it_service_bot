@@ -28,7 +28,6 @@ from app.helpdesk.runtime import (
     get_ticket_service,
     get_user_flow_service,
 )
-from app.helpdesk.services.menu_service import get_ticket_categories
 from app.helpdesk.services.ticket_service import (
     get_optional_contact_details,
     get_sender_identity,
@@ -105,7 +104,8 @@ def _build_menu_for_user_with_registry(user_id: int, cfg, access_registry):
     return build_main_menu_keyboard(
         can_create_ticket=True,
         can_view_my_tickets=True,
-        can_view_help=is_service_actor,
+        can_view_help=not is_service_actor,
+        can_view_about=not is_service_actor,
         can_use_network_tools=can_use_network_tools(
             user_id=user_id,
             admin_ids=admin_ids,
@@ -168,7 +168,6 @@ def _extract_ticket_media_attachments(event: MessageCreated) -> list[Any]:
 
 def register(dp) -> None:
     cfg = get_config()
-    categories = get_ticket_categories()
     tickets = get_ticket_service()
     ticket_links = get_ticket_link_service()
     user_flow = get_user_flow_service()
@@ -1025,26 +1024,8 @@ def register(dp) -> None:
             )
             return
 
-        user_flow.begin_create(sender_id)
-
-        if text or message_attachments:
-            fallback_category = categories[-1]
-            user_flow.set_category(sender_id, fallback_category)
-            draft = user_flow.append_problem_chunk(
-                sender_id,
-                text=text if text and not text.startswith("/") else None,
-                attachments=message_attachments,
-            )
-            draft.step = "awaiting_problem_text"
-            _schedule_problem_submit(sender_id, event._ensure_bot())
-            return
-
-        requester_phone, requester_department = get_optional_contact_details(sender)
         await event.message.answer(
-            text=(
-                "Выберите категорию обращения кнопкой «Создать обращение».\n"
-                f"Профиль: телефон={requester_phone or '-'}, подразделение={requester_department or '-'}"
-            ),
+            text=user_texts.MENU_CATEGORY_HINT_TEXT,
             attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
         )
 

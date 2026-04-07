@@ -139,7 +139,8 @@ def _build_menu_for_user(user_id: int, cfg, access_registry):
     return build_main_menu_keyboard(
         can_create_ticket=True,
         can_view_my_tickets=True,
-        can_view_help=is_service_actor,
+        can_view_help=not is_service_actor,
+        can_view_about=not is_service_actor,
         can_use_network_tools=can_use_network_tools(
             user_id=user_id,
             admin_ids=admin_ids,
@@ -767,6 +768,14 @@ def register(dp) -> None:
                 attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
             )
             await event.answer(notification="Справка")
+            return
+
+        if action == "about":
+            await event.message.answer(
+                text=user_texts.ABOUT_TEXT,
+                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+            )
+            await event.answer(notification="О боте")
             return
 
         if action == "rewrite":

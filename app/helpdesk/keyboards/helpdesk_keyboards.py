@@ -8,6 +8,7 @@ def build_main_menu_keyboard(
     can_create_ticket: bool = True,
     can_view_my_tickets: bool = True,
     can_view_help: bool = True,
+    can_view_about: bool = False,
     can_use_network_tools: bool = False,
     can_view_service_functions: bool = False,
     is_admin: bool = False,
@@ -21,10 +22,11 @@ def build_main_menu_keyboard(
     else:
         buttons = []
 
-    if can_use_tv_help:
-        buttons.append(
-            [CallbackButton(text="Проблема с TV у гостя", payload=UserMenuPayload(action="tv_guest").pack())]
-        )
+    # Временно скрыто до подготовки дорожной карты по TV-инцидентам.
+    # if can_use_tv_help:
+    #     buttons.append(
+    #         [CallbackButton(text="Проблема с TV у гостя", payload=UserMenuPayload(action="tv_guest").pack())]
+    #     )
 
     if can_create_ticket:
         buttons.append(
@@ -34,8 +36,13 @@ def build_main_menu_keyboard(
     if can_view_my_tickets:
         buttons.append([CallbackButton(text="Мои обращения", payload=UserMenuPayload(action="my").pack())])
 
+    info_buttons: list[CallbackButton] = []
     if can_view_help:
-        buttons.append([CallbackButton(text="Помощь", payload=UserMenuPayload(action="help").pack())])
+        info_buttons.append(CallbackButton(text="Помощь", payload=UserMenuPayload(action="help").pack()))
+    if can_view_about:
+        info_buttons.append(CallbackButton(text="О боте", payload=UserMenuPayload(action="about").pack()))
+    if info_buttons:
+        buttons.append(info_buttons)
 
     if can_use_network_tools:
         buttons.append(
@@ -43,16 +50,6 @@ def build_main_menu_keyboard(
                 CallbackButton(
                     text="Сетевые инструменты",
                     payload=UserMenuPayload(action="network").pack(),
-                )
-            ]
-        )
-
-    if can_view_service_functions:
-        buttons.append(
-            [
-                CallbackButton(
-                    text="Сервисные команды",
-                    payload=UserMenuPayload(action="service_help").pack(),
                 )
             ]
         )
