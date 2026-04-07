@@ -1,4 +1,4 @@
-﻿# Инструкция по запуску и проверке (RU)
+# Инструкция по запуску и проверке (RU)
 
 ## 1) Локальный запуск
 1. Установите Python 3.12+.
@@ -18,8 +18,15 @@
   - `MAX_ADMIN_IDS`
   - `MAX_IT_SPECIALIST_IDS`
 - Хранилище заявок:
-  - `MAX_TICKET_BACKEND` (`sqlite`/`memory`)
+  - `MAX_TICKET_BACKEND` (`sqlite`/`memory`/`postgres`)
   - `MAX_TICKET_DB_PATH`
+  - `MAX_TICKET_PG_HOST`
+  - `MAX_TICKET_PG_PORT`
+  - `MAX_TICKET_PG_DB`
+  - `MAX_TICKET_PG_USER`
+  - `MAX_TICKET_PG_PASSWORD`
+  - `MAX_TICKET_PG_SSLMODE`
+  - `MAX_TICKET_PG_CONNECT_TIMEOUT_SEC`
 - Network policy/feature flags:
   - `MAX_NET_ALLOWED_SUBNETS`
   - `MAX_NET_ALLOWED_DOMAIN_SUFFIXES`
@@ -70,4 +77,14 @@
 6. Запрещённые внешние target отклоняются policy.
 7. Разрешённые корпоративные target проходят проверку.
 
-См. детальный ручной список в docs/MANUAL_CHECKLIST_RU.md.\n\nКоманда автопроверки: python -m unittest discover -s tests -v.
+См. детальный ручной список в docs/MANUAL_CHECKLIST_RU.md.
+
+Команда автопроверки: `python -m unittest discover -s tests -v`.
+
+## 10) Миграция в нормализованную PostgreSQL-схему
+1. Убедитесь, что выставлен backend:
+   - `MAX_TICKET_BACKEND=postgres`
+2. Примените SQL-миграцию:
+   - `python scripts/apply_postgres_migration.py`
+3. Перенесите реестр пользователей из JSON в `auth.*`:
+   - `python scripts/migrate_user_registry_to_auth.py`

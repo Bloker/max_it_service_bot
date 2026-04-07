@@ -28,6 +28,13 @@ class BotConfig:
 class TicketStorageConfig:
     backend: str
     sqlite_path: str
+    postgres_host: str
+    postgres_port: int
+    postgres_db: str
+    postgres_user: str
+    postgres_password: str
+    postgres_sslmode: str
+    postgres_connect_timeout_sec: int
 
 
 @dataclass(frozen=True)
@@ -145,12 +152,50 @@ def get_config() -> AppConfig:
     skip_updates_on_start = _parse_bool_env("MAX_SKIP_UPDATES_ON_START", True)
 
     ticket_backend = os.getenv("MAX_TICKET_BACKEND", "sqlite").strip().lower()
-    if ticket_backend not in {"sqlite", "memory"}:
-        raise RuntimeError("MAX_TICKET_BACKEND must be 'sqlite' or 'memory'")
+    if ticket_backend not in {"sqlite", "memory", "postgres"}:
+        raise RuntimeError("MAX_TICKET_BACKEND must be 'sqlite', 'memory' or 'postgres'")
 
     ticket_sqlite_path = os.getenv("MAX_TICKET_DB_PATH", "data/helpdesk_tickets.sqlite3").strip()
     if not ticket_sqlite_path:
         raise RuntimeError("MAX_TICKET_DB_PATH must not be empty")
+
+    ticket_pg_host = os.getenv("MAX_TICKET_PG_HOST", "").strip()
+    ticket_pg_port_raw = os.getenv("MAX_TICKET_PG_PORT", "5432").strip()
+    ticket_pg_db = os.getenv("MAX_TICKET_PG_DB", "postgres").strip()
+    ticket_pg_user = os.getenv("MAX_TICKET_PG_USER", "").strip()
+    ticket_pg_password = os.getenv("MAX_TICKET_PG_PASSWORD", "").strip()
+    ticket_pg_sslmode = os.getenv("MAX_TICKET_PG_SSLMODE", "prefer").strip().lower() or "prefer"
+    ticket_pg_timeout_raw = os.getenv("MAX_TICKET_PG_CONNECT_TIMEOUT_SEC", "5").strip()
+
+    try:
+        ticket_pg_port = int(ticket_pg_port_raw)
+        ticket_pg_connect_timeout_sec = int(ticket_pg_timeout_raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            "MAX_TICKET_PG_PORT and MAX_TICKET_PG_CONNECT_TIMEOUT_SEC must be integers"
+        ) from exc
+
+    if not (1 <= ticket_pg_port <= 65535):
+        raise RuntimeError("MAX_TICKET_PG_PORT must be between 1 and 65535")
+    if ticket_pg_connect_timeout_sec <= 0:
+        raise RuntimeError("MAX_TICKET_PG_CONNECT_TIMEOUT_SEC must be > 0")
+
+    allowed_sslmodes = {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}
+    if ticket_pg_sslmode not in allowed_sslmodes:
+        raise RuntimeError(
+            "MAX_TICKET_PG_SSLMODE must be one of: "
+            "disable, allow, prefer, require, verify-ca, verify-full"
+        )
+
+    if ticket_backend == "postgres":
+        if not ticket_pg_host:
+            raise RuntimeError("MAX_TICKET_PG_HOST must not be empty for postgres backend")
+        if not ticket_pg_db:
+            raise RuntimeError("MAX_TICKET_PG_DB must not be empty for postgres backend")
+        if not ticket_pg_user:
+            raise RuntimeError("MAX_TICKET_PG_USER must not be empty for postgres backend")
+        if not ticket_pg_password:
+            raise RuntimeError("MAX_TICKET_PG_PASSWORD must not be empty for postgres backend")
 
     allowed_subnets = _parse_str_tuple_csv(
         os.getenv("MAX_NET_ALLOWED_SUBNETS", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16")
@@ -205,6 +250,13 @@ def get_config() -> AppConfig:
         tickets=TicketStorageConfig(
             backend=ticket_backend,
             sqlite_path=ticket_sqlite_path,
+            postgres_host=ticket_pg_host,
+            postgres_port=ticket_pg_port,
+            postgres_db=ticket_pg_db,
+            postgres_user=ticket_pg_user,
+            postgres_password=ticket_pg_password,
+            postgres_sslmode=ticket_pg_sslmode,
+            postgres_connect_timeout_sec=ticket_pg_connect_timeout_sec,
         ),
         network_tools=NetworkToolsConfig(
             command_timeout_sec=timeout_sec,
