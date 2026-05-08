@@ -22,6 +22,9 @@ class BotConfig:
     admin_ids: tuple[int, ...]
     it_specialist_ids: tuple[int, ...]
     skip_updates_on_start: bool
+    polling_limit: int
+    polling_timeout_sec: int
+    polling_min_interval_sec: float
 
 
 @dataclass(frozen=True)
@@ -116,6 +119,14 @@ def _parse_bool_env(name: str, default: bool) -> bool:
     raise RuntimeError(f"{name} must be a boolean value (true/false)")
 
 
+def _parse_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a number") from exc
+
+
 def get_config() -> AppConfig:
     _load_environment()
 
@@ -150,6 +161,22 @@ def get_config() -> AppConfig:
         "MAX_IT_SPECIALIST_IDS",
     )
     skip_updates_on_start = _parse_bool_env("MAX_SKIP_UPDATES_ON_START", True)
+    polling_limit_raw = os.getenv("MAX_POLLING_LIMIT", "100").strip()
+    polling_timeout_raw = os.getenv("MAX_POLLING_TIMEOUT_SEC", "30").strip()
+    try:
+        polling_limit = int(polling_limit_raw)
+        polling_timeout_sec = int(polling_timeout_raw)
+    except ValueError as exc:
+        raise RuntimeError("MAX_POLLING_LIMIT and MAX_POLLING_TIMEOUT_SEC must be integers") from exc
+
+    if not (1 <= polling_limit <= 100):
+        raise RuntimeError("MAX_POLLING_LIMIT must be between 1 and 100")
+    if not (0 <= polling_timeout_sec <= 30):
+        raise RuntimeError("MAX_POLLING_TIMEOUT_SEC must be between 0 and 30")
+
+    polling_min_interval_sec = _parse_float_env("MAX_POLLING_MIN_INTERVAL_SEC", 0.55)
+    if polling_min_interval_sec < 0.5:
+        raise RuntimeError("MAX_POLLING_MIN_INTERVAL_SEC must be >= 0.5")
 
     ticket_backend = os.getenv("MAX_TICKET_BACKEND", "sqlite").strip().lower()
     if ticket_backend not in {"sqlite", "memory", "postgres"}:
@@ -245,6 +272,9 @@ def get_config() -> AppConfig:
             admin_ids=admin_ids,
             it_specialist_ids=it_specialist_ids,
             skip_updates_on_start=skip_updates_on_start,
+            polling_limit=polling_limit,
+            polling_timeout_sec=polling_timeout_sec,
+            polling_min_interval_sec=polling_min_interval_sec,
         ),
         logs=logs,
         tickets=TicketStorageConfig(

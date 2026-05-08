@@ -20,3 +20,4 @@ data/*.sqlite3-*
 data/
 
 test_main.py
+docs/CODEX_PROJECT_CONTEXT_RU.md

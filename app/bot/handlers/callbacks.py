@@ -1,7 +1,9 @@
 ﻿import logging
 
+from maxapi.enums.message_link_type import MessageLinkType
 from maxapi.enums.parse_mode import ParseMode
 from maxapi.types import MessageCallback
+from maxapi.types.message import NewMessageLink
 
 from app.admin.runtime import get_user_access_registry
 from app.admin.services.access_service import (
@@ -22,6 +24,7 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_admin_users_keyboard,
     build_categories_keyboard,
     build_main_menu_keyboard,
+    build_open_tickets_keyboard,
     build_ticket_actions_keyboard,
     build_wifi_auth_keyboard,
     build_wifi_device_keyboard,
@@ -85,15 +88,32 @@ def _build_users_text(users) -> str:
 
 
 def _build_open_tickets_text(items) -> str:
-    if not items:
-        return "Открытых заявок нет."
-    lines = ["Не закрытые заявки:"]
-    for ticket in items:
-        assignee = ticket.assignee_name or "не назначен"
-        lines.append(
-            f"{ticket.ticket_id} | {ticket.status.value} | {assignee} | {ticket.category}"
-        )
-    return "\n".join(lines)
+    return specialist_texts.render_open_tickets_list(items, title="Не закрытые заявки")
+
+
+async def _send_ticket_card_from_list(event: MessageCallback, ticket, ticket_links) -> None:
+    group_message_id = ticket_links.get_group_message_id(ticket.ticket_id)
+    if group_message_id:
+        try:
+            await event.message.answer(
+                text=specialist_texts.render_group_ticket(ticket),
+                attachments=[build_ticket_actions_keyboard(ticket.ticket_id)],
+                link=NewMessageLink(type=MessageLinkType.REPLY, mid=group_message_id),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        except Exception:
+            logger.exception(
+                "Failed to send linked ticket card: ticket_id=%s group_message_id=%s",
+                ticket.ticket_id,
+                group_message_id,
+            )
+
+    await event.message.answer(
+        text=specialist_texts.render_group_ticket(ticket),
+        attachments=[build_ticket_actions_keyboard(ticket.ticket_id)],
+        parse_mode=ParseMode.HTML,
+    )
 
 
 def _build_user_card_text(item, access_registry) -> str:
@@ -960,8 +980,29 @@ def register(dp) -> None:
                 await event.answer(notification=specialist_texts.FORBIDDEN_TEXT)
                 return
             open_tickets = await tickets.list_open_tickets(limit=50)
-            await event.message.answer(text=_build_open_tickets_text(open_tickets))
+            attachments = [build_open_tickets_keyboard(open_tickets)] if open_tickets else None
+            await event.message.answer(
+                text=_build_open_tickets_text(open_tickets),
+                attachments=attachments,
+                parse_mode=ParseMode.HTML,
+            )
             await event.answer(notification="Список открытых заявок")
+            return
+
+        if action == "open_card":
+            if not can_view_service_functions(
+                user_id=actor_id,
+                admin_ids=admin_ids,
+                specialist_ids=specialist_ids,
+            ):
+                await event.answer(notification=specialist_texts.FORBIDDEN_TEXT)
+                return
+            ticket = await tickets.get_ticket(ticket_id)
+            if ticket is None:
+                await event.answer(notification=specialist_texts.NOT_FOUND_TEXT)
+                return
+            await _send_ticket_card_from_list(event, ticket, ticket_links)
+            await event.answer(notification=f"Открыта {ticket.ticket_id}")
             return
 
         if action == "take" and not can_take_ticket(

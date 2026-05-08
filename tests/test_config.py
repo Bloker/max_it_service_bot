@@ -30,6 +30,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.tickets.postgres_password, "secret")
         self.assertEqual(cfg.tickets.postgres_sslmode, "disable")
         self.assertEqual(cfg.tickets.postgres_connect_timeout_sec, 5)
+        self.assertEqual(cfg.bot.polling_limit, 100)
+        self.assertEqual(cfg.bot.polling_timeout_sec, 30)
+        self.assertEqual(cfg.bot.polling_min_interval_sec, 0.55)
 
     def test_postgres_backend_requires_host(self) -> None:
         env = {
@@ -41,6 +44,16 @@ class ConfigTests(unittest.TestCase):
             "MAX_TICKET_PG_DB": "postgres",
             "MAX_TICKET_PG_USER": "postgres",
             "MAX_TICKET_PG_PASSWORD": "secret",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with self.assertRaises(RuntimeError):
+                get_config()
+
+    def test_polling_limit_rejects_values_above_max_requirements(self) -> None:
+        env = {
+            "MAX_BOT_TOKEN": "test-token",
+            "MAX_GROUP_CHAT_ID": "123",
+            "MAX_POLLING_LIMIT": "101",
         }
         with patch.dict(os.environ, env, clear=False):
             with self.assertRaises(RuntimeError):

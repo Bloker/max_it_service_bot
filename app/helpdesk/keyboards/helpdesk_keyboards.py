@@ -385,6 +385,38 @@ def build_ticket_actions_keyboard(ticket_id: str):
     ).pack()
 
 
+def build_open_tickets_keyboard(tickets, *, max_buttons: int = 20):
+    rows: list[list[CallbackButton]] = []
+    row: list[CallbackButton] = []
+
+    for ticket in tickets[:max_buttons]:
+        row.append(
+            CallbackButton(
+                text=ticket.ticket_id,
+                payload=SpecialistTicketPayload(
+                    action="open_card",
+                    ticket_id=ticket.ticket_id,
+                ).pack(),
+            )
+        )
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+
+    if row:
+        rows.append(row)
+
+    rows.append(
+        [
+            CallbackButton(
+                text="Обновить список",
+                payload=SpecialistTicketPayload(action="open_list", ticket_id="-").pack(),
+            )
+        ]
+    )
+    return ButtonsPayload(buttons=rows).pack()
+
+
 def build_admin_hotel_select_keyboard(user_id: int, hotels: tuple[tuple[str, str], ...]):
     rows: list[list[CallbackButton]] = []
     for hotel_code, hotel_label in hotels:

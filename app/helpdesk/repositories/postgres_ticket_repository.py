@@ -151,16 +151,26 @@ class PostgresTicketRepository:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
+                    "SELECT nextval(pg_get_serial_sequence('public.helpdesk_tickets', 'id')) AS id"
+                )
+                inserted_id = cur.fetchone()
+                if inserted_id is None:
+                    raise RuntimeError("Could not allocate ticket id")
+                row_id = int(inserted_id["id"])
+                ticket_id = f"T-{row_id:05d}"
+
+                cur.execute(
                     """
                     INSERT INTO public.helpdesk_tickets (
-                        ticket_id, requester_user_id, requester_name, category, text,
+                        id, ticket_id, requester_user_id, requester_name, category, text,
                         status, assignee_user_id, assignee_name,
                         created_at, updated_at, requester_phone, requester_department
-                    ) VALUES (%s, %s, %s, %s, %s, %s, NULL, NULL, %s, %s, %s, %s)
-                    RETURNING id
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, NULL, %s, %s, %s, %s)
+                    RETURNING *
                     """,
                     (
-                        "PENDING",
+                        row_id,
+                        ticket_id,
                         requester_user_id,
                         requester_name,
                         category,
@@ -171,19 +181,6 @@ class PostgresTicketRepository:
                         requester_phone,
                         requester_department,
                     ),
-                )
-                inserted = cur.fetchone()
-                if inserted is None:
-                    raise RuntimeError("Could not create ticket")
-                row_id = int(inserted["id"])
-                ticket_id = f"T-{row_id:05d}"
-                cur.execute(
-                    "UPDATE public.helpdesk_tickets SET ticket_id = %s WHERE id = %s",
-                    (ticket_id, row_id),
-                )
-                cur.execute(
-                    "SELECT * FROM public.helpdesk_tickets WHERE id = %s",
-                    (row_id,),
                 )
                 row = cur.fetchone()
             conn.commit()

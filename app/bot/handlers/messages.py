@@ -20,6 +20,7 @@ from app.common.user_helpers import get_first_name, get_full_name
 from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_admin_request_keyboard,
     build_main_menu_keyboard,
+    build_open_tickets_keyboard,
     build_registration_keyboard,
     build_ticket_actions_keyboard,
 )
@@ -66,12 +67,6 @@ def _resolve_replied_mid(event: MessageCreated) -> str | None:
     if not linked or not linked.message:
         return None
     return linked.message.mid
-
-
-def _render_open_tickets(lines: list[str]) -> str:
-    if not lines:
-        return "Открытых заявок нет."
-    return "Открытые заявки:\n" + "\n".join(lines)
 
 
 def _build_menu_for_user(user_id: int, cfg):
@@ -723,13 +718,15 @@ def register(dp) -> None:
                     limit,
                     len(open_tickets),
                 )
-                lines = []
-                for ticket in open_tickets:
-                    assignee = ticket.assignee_name or "не назначен"
-                    lines.append(
-                        f"{ticket.ticket_id} | {ticket.status.value} | {assignee} | {ticket.category}"
-                    )
-                await event.message.answer(_render_open_tickets(lines))
+                attachments = [build_open_tickets_keyboard(open_tickets)] if open_tickets else None
+                await event.message.answer(
+                    specialist_texts.render_open_tickets_list(
+                        open_tickets,
+                        title="Открытые заявки",
+                    ),
+                    attachments=attachments,
+                    parse_mode=ParseMode.HTML,
+                )
                 return
 
             action, maybe_ticket_id = parse_specialist_command(text)
@@ -1028,5 +1025,3 @@ def register(dp) -> None:
             text=user_texts.MENU_CATEGORY_HINT_TEXT,
             attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
         )
-
-
