@@ -1,7 +1,9 @@
 import unittest
+from datetime import datetime, timezone
 
 from app.helpdesk.models.ticket import Ticket, TicketStatus
 from app.helpdesk.texts.specialist_texts import render_open_tickets_list
+from app.helpdesk.texts.user_texts import render_ticket_closed_notification
 
 
 class SpecialistTextsTests(unittest.TestCase):
@@ -35,6 +37,19 @@ class SpecialistTextsTests(unittest.TestCase):
 
     def test_render_open_tickets_list_handles_empty_list(self) -> None:
         self.assertEqual(render_open_tickets_list([]), "Открытых заявок нет.")
+
+    def test_render_ticket_closed_notification_formats_created_date(self) -> None:
+        ticket = Ticket(
+            id="T-00001",
+            user_id=101,
+            category="Доступы",
+            text="Test",
+            created_at=datetime(2026, 5, 13, 7, 30, tzinfo=timezone.utc),
+        )
+
+        text = render_ticket_closed_notification(ticket)
+
+        self.assertEqual(text, "Заявка №T-00001 от 13.05.2026 10:30 выполнена.")
 
 
 if __name__ == "__main__":

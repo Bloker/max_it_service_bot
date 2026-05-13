@@ -1,3 +1,5 @@
+"""Загрузка и валидация конфигурации приложения из окружения."""
+
 import logging
 import os
 from dataclasses import dataclass
@@ -9,12 +11,16 @@ from dotenv import load_dotenv
 
 @dataclass(frozen=True)
 class LogsConfig:
+    """Настройки логирования приложения."""
+
     level_name: str = "INFO"
     format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 
 @dataclass(frozen=True)
 class BotConfig:
+    """Настройки MAX-бота и polling."""
+
     token: str
     group_chat_id: int
     user_ids: tuple[int, ...]
@@ -29,6 +35,8 @@ class BotConfig:
 
 @dataclass(frozen=True)
 class TicketStorageConfig:
+    """Настройки хранилища заявок HelpDesk."""
+
     backend: str
     sqlite_path: str
     postgres_host: str
@@ -42,6 +50,8 @@ class TicketStorageConfig:
 
 @dataclass(frozen=True)
 class NetworkToolsFeaturesConfig:
+    """Флаги доступности сетевых инструментов."""
+
     ping: bool
     dns_lookup: bool
     host_check: bool
@@ -52,6 +62,8 @@ class NetworkToolsFeaturesConfig:
 
 @dataclass(frozen=True)
 class NetworkPolicyConfig:
+    """Ограничения сетевой диагностики по корпоративной политике."""
+
     allowed_subnets: tuple[str, ...]
     allowed_domain_suffixes: tuple[str, ...]
     allowed_hosts: tuple[str, ...]
@@ -60,6 +72,8 @@ class NetworkPolicyConfig:
 
 @dataclass(frozen=True)
 class NetworkToolsConfig:
+    """Общие настройки сетевых инструментов."""
+
     command_timeout_sec: int
     max_output_chars: int
     features: NetworkToolsFeaturesConfig
@@ -67,14 +81,55 @@ class NetworkToolsConfig:
 
 
 @dataclass(frozen=True)
+class WifiLinkConfig:
+    """Настройки интеграции с личным кабинетом WiFi.link."""
+
+    base_url: str
+    email: str
+    password: str
+    timeout_sec: int
+    max_pages: int
+    cache_ttl_sec: int
+
+    @property
+    def is_configured(self) -> bool:
+        """Проверяет, заданы ли учетные данные WiFi.link."""
+
+        return bool(self.email and self.password)
+
+
+@dataclass(frozen=True)
+class NetariumConfig:
+    """Настройки интеграции с Netarium API."""
+
+    base_url: str
+    api_key: str
+    object_class: str
+    timeout_sec: int
+    cache_ttl_sec: int
+
+    @property
+    def is_configured(self) -> bool:
+        """Проверяет, достаточно ли данных для запроса Netarium API."""
+
+        return bool(self.base_url and self.api_key and self.object_class)
+
+
+@dataclass(frozen=True)
 class AppConfig:
+    """Полная конфигурация приложения."""
+
     bot: BotConfig
     logs: LogsConfig
     tickets: TicketStorageConfig
     network_tools: NetworkToolsConfig
+    wifi_link: WifiLinkConfig
+    netarium: NetariumConfig
 
 
 def _load_environment() -> None:
+    """Загружает .env из корня проекта и config/.env."""
+
     root_dir = Path(__file__).resolve().parents[1]
     dotenv_candidates = (
         root_dir / ".env",
@@ -87,6 +142,8 @@ def _load_environment() -> None:
 
 
 def _parse_int_tuple_csv(raw: str, env_name: str) -> tuple[int, ...]:
+    """Парсит CSV-строку с integer ID."""
+
     values = raw.strip()
     if not values:
         return ()
@@ -104,6 +161,8 @@ def _parse_int_tuple_csv(raw: str, env_name: str) -> tuple[int, ...]:
 
 
 def _parse_str_tuple_csv(raw: str) -> tuple[str, ...]:
+    """Парсит CSV-строку в tuple lower-case значений."""
+
     values = raw.strip()
     if not values:
         return ()
@@ -111,6 +170,8 @@ def _parse_str_tuple_csv(raw: str) -> tuple[str, ...]:
 
 
 def _parse_bool_env(name: str, default: bool) -> bool:
+    """Парсит boolean env-переменную с явной валидацией."""
+
     raw = os.getenv(name, str(default)).strip().lower()
     if raw in {"1", "true", "yes", "on"}:
         return True
@@ -120,6 +181,8 @@ def _parse_bool_env(name: str, default: bool) -> bool:
 
 
 def _parse_float_env(name: str, default: float) -> float:
+    """Парсит float env-переменную с понятной ошибкой."""
+
     raw = os.getenv(name, str(default)).strip()
     try:
         return float(raw)
@@ -128,6 +191,8 @@ def _parse_float_env(name: str, default: float) -> float:
 
 
 def get_config() -> AppConfig:
+    """Собирает и валидирует конфигурацию из переменных окружения."""
+
     _load_environment()
 
     token = os.getenv("MAX_BOT_TOKEN", "").strip()
@@ -263,6 +328,58 @@ def get_config() -> AppConfig:
         whois=_parse_bool_env("MAX_NET_FEATURE_WHOIS", False),
     )
 
+    # WiFi.link используется только в административном WiFi-сценарии.
+    wifi_link_base_url = os.getenv("MAX_WIFI_LINK_BASE_URL", "https://lk.wi-fi.link").strip()
+    wifi_link_email = os.getenv("MAX_WIFI_LINK_EMAIL", "").strip()
+    wifi_link_password = os.getenv("MAX_WIFI_LINK_PASSWORD", "").strip()
+    wifi_link_timeout_raw = os.getenv("MAX_WIFI_LINK_TIMEOUT_SEC", "10").strip()
+    wifi_link_max_pages_raw = os.getenv("MAX_WIFI_LINK_MAX_PAGES", "20").strip()
+    wifi_link_cache_ttl_raw = os.getenv("MAX_WIFI_LINK_CACHE_TTL_SEC", "120").strip()
+    try:
+        wifi_link_timeout_sec = int(wifi_link_timeout_raw)
+        wifi_link_max_pages = int(wifi_link_max_pages_raw)
+        wifi_link_cache_ttl_sec = int(wifi_link_cache_ttl_raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            "MAX_WIFI_LINK_TIMEOUT_SEC, MAX_WIFI_LINK_MAX_PAGES and "
+            "MAX_WIFI_LINK_CACHE_TTL_SEC must be integers"
+        ) from exc
+
+    if not wifi_link_base_url:
+        raise RuntimeError("MAX_WIFI_LINK_BASE_URL must not be empty")
+    if wifi_link_timeout_sec <= 0:
+        raise RuntimeError("MAX_WIFI_LINK_TIMEOUT_SEC must be > 0")
+    if wifi_link_max_pages <= 0:
+        raise RuntimeError("MAX_WIFI_LINK_MAX_PAGES must be > 0")
+    if wifi_link_cache_ttl_sec < 0:
+        raise RuntimeError("MAX_WIFI_LINK_CACHE_TTL_SEC must be >= 0")
+
+    # Netarium служит источником списка комнат и данных проживания гостей.
+    netarium_base_url = os.getenv("MAX_NETARIUM_BASE_URL", "http://192.168.2.34:8081").strip()
+    netarium_api_key = os.getenv("MAX_NETARIUM_API_KEY", "").strip()
+    netarium_object_class = os.getenv(
+        "MAX_NETARIUM_OBJECT_CLASS",
+        "61746224-5eac-4663-a7db-396beffec01c",
+    ).strip()
+    netarium_timeout_raw = os.getenv("MAX_NETARIUM_TIMEOUT_SEC", "10").strip()
+    netarium_cache_ttl_raw = os.getenv("MAX_NETARIUM_CACHE_TTL_SEC", "120").strip()
+    try:
+        netarium_timeout_sec = int(netarium_timeout_raw)
+        netarium_cache_ttl_sec = int(netarium_cache_ttl_raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            "MAX_NETARIUM_TIMEOUT_SEC and MAX_NETARIUM_CACHE_TTL_SEC must be integers"
+        ) from exc
+
+    if not netarium_base_url:
+        raise RuntimeError("MAX_NETARIUM_BASE_URL must not be empty")
+    if not netarium_object_class:
+        raise RuntimeError("MAX_NETARIUM_OBJECT_CLASS must not be empty")
+    if netarium_timeout_sec <= 0:
+        raise RuntimeError("MAX_NETARIUM_TIMEOUT_SEC must be > 0")
+    if netarium_cache_ttl_sec < 0:
+        raise RuntimeError("MAX_NETARIUM_CACHE_TTL_SEC must be >= 0")
+
     return AppConfig(
         bot=BotConfig(
             token=token,
@@ -299,9 +416,26 @@ def get_config() -> AppConfig:
                 allowed_device_types=allowed_device_types,
             ),
         ),
+        wifi_link=WifiLinkConfig(
+            base_url=wifi_link_base_url.rstrip("/"),
+            email=wifi_link_email,
+            password=wifi_link_password,
+            timeout_sec=wifi_link_timeout_sec,
+            max_pages=wifi_link_max_pages,
+            cache_ttl_sec=wifi_link_cache_ttl_sec,
+        ),
+        netarium=NetariumConfig(
+            base_url=netarium_base_url.rstrip("/"),
+            api_key=netarium_api_key,
+            object_class=netarium_object_class,
+            timeout_sec=netarium_timeout_sec,
+            cache_ttl_sec=netarium_cache_ttl_sec,
+        ),
     )
 
 
 def setup_logging(cfg: LogsConfig) -> None:
+    """Настраивает root logging для всего приложения."""
+
     level = getattr(logging, (cfg.level_name or "").upper(), logging.INFO)
     logging.basicConfig(level=level, format=cfg.format, force=True)

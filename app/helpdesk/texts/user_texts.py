@@ -1,4 +1,11 @@
-﻿from app.helpdesk.models.ticket import Ticket, TicketStatus
+"""Пользовательские тексты и форматирование сообщений HelpDesk."""
+
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from app.helpdesk.models.ticket import Ticket, TicketStatus
+
+_MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
 WELCOME_TEXT = (
@@ -33,7 +40,26 @@ MENU_CATEGORY_HINT_TEXT = "Выберите категорию в меню."
 
 
 def user_ticket_line(ticket: Ticket) -> str:
+    """Форматирует одну строку заявки в пользовательском списке."""
+
     return f"{ticket.ticket_id} • {ticket.category} • {ticket.status.value}"
+
+
+def _format_ticket_created_at(value: datetime) -> str:
+    """Форматирует дату заявки в часовом поясе пользователя."""
+
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=_MOSCOW_TZ)
+    return value.astimezone(_MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
+
+
+def render_ticket_closed_notification(ticket: Ticket) -> str:
+    """Форматирует уведомление пользователю о выполненной заявке."""
+
+    return (
+        f"Заявка №{ticket.ticket_id} "
+        f"от {_format_ticket_created_at(ticket.created_at)} выполнена."
+    )
 
 
 NO_TICKETS_TEXT = "У вас пока нет обращений."
@@ -91,4 +117,6 @@ WIFI_RESOLVED_TEXT = "Отлично, проблема решена."
 
 
 def status_human(status: TicketStatus) -> str:
+    """Возвращает человекочитаемый статус заявки."""
+
     return status.value

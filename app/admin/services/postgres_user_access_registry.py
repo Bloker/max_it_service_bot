@@ -1,3 +1,5 @@
+"""PostgreSQL-хранилище пользователей, ролей и заявок на доступ."""
+
 import threading
 from datetime import datetime, timezone
 
@@ -21,6 +23,8 @@ _ROLE_DISPLAY_TO_CODE = {value: key for key, value in _ROLE_CODE_TO_DISPLAY.item
 
 
 class PostgresUserAccessRegistry:
+    """PostgreSQL-реестр пользователей, ролей и заявок на доступ."""
+
     def __init__(
         self,
         *,
@@ -39,6 +43,8 @@ class PostgresUserAccessRegistry:
         self._lock = threading.Lock()
 
     def _connect(self):
+        """Открывает PostgreSQL-соединение с dict_row."""
+
         try:
             import psycopg
             from psycopg.rows import dict_row
@@ -112,6 +118,8 @@ class PostgresUserAccessRegistry:
         return user_id in set(self.get_approved_ids())
 
     def request_access(self, user_id: int, user_name: str, phone: str | None = None) -> str:
+        """Создает pending-заявку на доступ в PostgreSQL."""
+
         with self._lock, self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -153,6 +161,8 @@ class PostgresUserAccessRegistry:
         return "created"
 
     def approve(self, user_id: int, role: str = "user") -> str:
+        """Одобряет заявку, активирует пользователя и назначает роль."""
+
         normalized_role = self._normalize_role(role)
         if not normalized_role:
             return "invalid_role"

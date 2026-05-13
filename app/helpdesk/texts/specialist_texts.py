@@ -1,9 +1,13 @@
+"""Тексты и форматирование сообщений для IT-специалистов."""
+
 from html import escape
 
 from app.helpdesk.models.ticket import Ticket
 
 
 def render_group_ticket(ticket: Ticket) -> str:
+    """Форматирует карточку заявки для группового чата IT."""
+
     assignee = escape(ticket.assignee_name or "не назначен")
     status = escape(ticket.status.value)
     category = escape(ticket.category)
@@ -23,6 +27,8 @@ def render_group_ticket(ticket: Ticket) -> str:
 
 
 def render_open_tickets_list(tickets: list[Ticket], *, title: str = "Не закрытые заявки") -> str:
+    """Форматирует список открытых заявок для специалистов."""
+
     if not tickets:
         return "Открытых заявок нет."
 

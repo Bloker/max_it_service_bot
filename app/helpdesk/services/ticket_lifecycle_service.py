@@ -1,4 +1,6 @@
-﻿import logging
+"""Сервис жизненного цикла заявок HelpDesk."""
+
+import logging
 from collections.abc import Iterable
 
 from app.helpdesk.models.ticket import Ticket, TicketStatus
@@ -10,6 +12,8 @@ logger = logging.getLogger(__name__)
 
 
 class TicketLifecycleService:
+    """Оркестрирует жизненный цикл заявок поверх репозитория."""
+
     def __init__(self, repository: TicketRepository) -> None:
         self.repository = repository
 
@@ -22,6 +26,8 @@ class TicketLifecycleService:
         requester_phone: str | None,
         requester_department: str | None,
     ) -> Ticket:
+        """Создает заявку и пишет событие в лог."""
+
         ticket = await self.repository.create_ticket(
             requester_user_id=requester_user_id,
             requester_name=requester_name,
@@ -47,6 +53,8 @@ class TicketLifecycleService:
         limit: int = 10,
         include_closed: bool = False,
     ) -> list[Ticket]:
+        """Возвращает заявки пользователя с опциональным показом закрытых."""
+
         tickets = await self.repository.list_by_user(user_id=user_id, limit=limit)
         if include_closed:
             return tickets
@@ -56,6 +64,8 @@ class TicketLifecycleService:
         return await self.repository.list_open(limit=limit)
 
     async def set_ticket_status(self, ticket_id: str, status: str) -> TicketActionResult:
+        """Меняет статус заявки через репозиторий."""
+
         result = await self.repository.update_status(ticket_id=ticket_id, status=status)
         if result.ok:
             logger.info("Ticket status changed: ticket_id=%s status=%s", ticket_id, status)
@@ -74,6 +84,8 @@ class TicketLifecycleService:
         specialist_user_id: int,
         specialist_name: str,
     ) -> TicketActionResult:
+        """Назначает заявку на специалиста."""
+
         result = await self.repository.assign(
             ticket_id=ticket_id,
             specialist_id=specialist_user_id,
@@ -96,6 +108,8 @@ class TicketLifecycleService:
         actor_user_id: int,
         admin_ids: Iterable[int],
     ) -> TicketActionResult:
+        """Освобождает заявку от исполнителя."""
+
         result = await self.repository.release(
             ticket_id=ticket_id,
             actor_user_id=actor_user_id,
@@ -119,6 +133,8 @@ class TicketLifecycleService:
         actor_name: str,
         admin_ids: Iterable[int],
     ) -> TicketActionResult:
+        """Закрывает заявку от имени администратора или исполнителя."""
+
         result = await self.repository.close(
             ticket_id=ticket_id,
             actor_user_id=actor_user_id,
@@ -143,6 +159,8 @@ class TicketLifecycleService:
         actor_name: str,
         admin_ids: Iterable[int],
     ) -> TicketActionResult:
+        """Переводит заявку в ожидание уточнения от пользователя."""
+
         result = await self.repository.request_clarification(
             ticket_id=ticket_id,
             actor_user_id=actor_user_id,

@@ -1,4 +1,6 @@
-﻿import asyncio
+"""Инициализация MAX Bot API, dispatcher и long polling."""
+
+import asyncio
 import logging
 from time import monotonic
 
@@ -12,17 +14,22 @@ logger = logging.getLogger(__name__)
 
 
 def register_routes(dp: Dispatcher) -> None:
+    """Регистрирует все обработчики событий MAX в диспетчере."""
+
     for reg in routes:
         reg(dp)
 
 
 def configure_long_polling_limits(bot: Bot, cfg: BotConfig) -> None:
+    """Ограничивает long polling под текущие требования MAX API."""
+
     original_get_updates = bot.get_updates
     last_request_at = 0.0
 
     async def get_updates_with_limits(*, limit=None, timeout=None, marker=None, types=None):
         nonlocal last_request_at
 
+        # MAX ограничивает частоту запросов; выдерживаем паузу между poll.
         elapsed = monotonic() - last_request_at
         if elapsed < cfg.polling_min_interval_sec:
             await asyncio.sleep(cfg.polling_min_interval_sec - elapsed)
@@ -39,6 +46,8 @@ def configure_long_polling_limits(bot: Bot, cfg: BotConfig) -> None:
 
 
 async def main() -> None:
+    """Создает бота, настраивает polling и запускает обработку событий."""
+
     cfg = get_config()
 
     bot = Bot(token=cfg.bot.token)

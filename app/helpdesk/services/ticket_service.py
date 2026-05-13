@@ -1,15 +1,21 @@
+"""Вспомогательные функции для обработки сообщений заявок."""
+
 from typing import Any
 
 from app.common.user_helpers import get_full_name
 
 
 def get_sender_identity(sender: Any, fallback_name: str) -> tuple[int, str]:
+    """Извлекает ID и отображаемое имя отправителя MAX."""
+
     sender_id = int(getattr(sender, "user_id"))
     full_name = get_full_name(sender, fallback=fallback_name)
     return sender_id, full_name
 
 
 def normalize_ticket_text(raw_text: str | None, empty_text_fallback: str) -> str:
+    """Нормализует текст заявки и подставляет fallback для пустого текста."""
+
     text = (raw_text or "").strip()
     if not text:
         return empty_text_fallback
@@ -17,14 +23,20 @@ def normalize_ticket_text(raw_text: str | None, empty_text_fallback: str) -> str
 
 
 def is_command_text(text: str) -> bool:
+    """Проверяет, является ли сообщение командой бота."""
+
     return text.startswith("/")
 
 
 def get_message_attachments(body: Any) -> list[Any]:
+    """Возвращает вложения сообщения MAX в виде списка."""
+
     return list(getattr(body, "attachments", None) or [])
 
 
 def get_optional_contact_details(sender: Any) -> tuple[str | None, str | None]:
+    """Извлекает необязательные контактные данные из профиля отправителя."""
+
     phone = getattr(sender, "phone", None)
     department = getattr(sender, "department", None)
     return (
@@ -34,10 +46,14 @@ def get_optional_contact_details(sender: Any) -> tuple[str | None, str | None]:
 
 
 def normalize_ticket_id(raw: str) -> str:
+    """Приводит ID заявки к единому виду."""
+
     return raw.strip().upper()
 
 
 def parse_specialist_command(raw_text: str) -> tuple[str, str | None]:
+    """Разбирает команду специалиста и ID заявки."""
+
     parts = (raw_text or "").strip().split(maxsplit=1)
     if not parts:
         return "", None
@@ -47,4 +63,3 @@ def parse_specialist_command(raw_text: str) -> tuple[str, str | None]:
     if cmd not in {"take", "release", "close", "clarify"}:
         return "", None
     return cmd, ticket_id
-

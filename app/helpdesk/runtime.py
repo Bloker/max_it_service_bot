@@ -1,3 +1,5 @@
+"""Фабрики singleton-сервисов HelpDesk."""
+
 from pathlib import Path
 
 from app.helpdesk.repositories.in_memory_ticket_repository import InMemoryTicketRepository
@@ -15,6 +17,8 @@ _ticket_link_service: TicketLinkService | PostgresTicketLinkService | None = Non
 
 
 def _build_ticket_service() -> TicketLifecycleService:
+    """Собирает сервис заявок с репозиторием из конфигурации."""
+
     cfg = get_config()
 
     if cfg.tickets.backend == "memory":
@@ -44,6 +48,8 @@ def _build_ticket_service() -> TicketLifecycleService:
 
 
 def get_ticket_service() -> TicketLifecycleService:
+    """Возвращает singleton сервиса жизненного цикла заявок."""
+
     global _ticket_service
     if _ticket_service is None:
         _ticket_service = _build_ticket_service()
@@ -51,6 +57,8 @@ def get_ticket_service() -> TicketLifecycleService:
 
 
 def get_user_flow_service() -> UserFlowService:
+    """Возвращает singleton сервиса пользовательских черновиков."""
+
     global _user_flow_service
     if _user_flow_service is None:
         _user_flow_service = UserFlowService()
@@ -58,6 +66,8 @@ def get_user_flow_service() -> UserFlowService:
 
 
 def get_ticket_link_service() -> TicketLinkService | PostgresTicketLinkService:
+    """Возвращает сервис связи заявок с сообщениями MAX."""
+
     global _ticket_link_service
     if _ticket_link_service is None:
         cfg = get_config()

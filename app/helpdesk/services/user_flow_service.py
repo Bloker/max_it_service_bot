@@ -1,9 +1,13 @@
+"""Сервис пользовательских черновиков и шагов создания заявки."""
+
 from dataclasses import dataclass, field
 from typing import Any
 
 
 @dataclass(slots=True)
 class UserDraft:
+    """Черновик пользовательской заявки в текущем диалоге."""
+
     category: str | None = None
     problem_text: str | None = None
     step: str = "idle"
@@ -11,6 +15,8 @@ class UserDraft:
 
 
 class UserFlowService:
+    """Хранит шаги пользовательского сценария создания заявки."""
+
     def __init__(self) -> None:
         self._drafts: dict[int, UserDraft] = {}
 
@@ -21,6 +27,8 @@ class UserFlowService:
         self._drafts[user_id] = UserDraft()
 
     def begin_create(self, user_id: int) -> UserDraft:
+        """Начинает сценарий создания новой заявки."""
+
         draft = self.get(user_id)
         draft.step = "awaiting_category"
         draft.category = None
@@ -29,12 +37,16 @@ class UserFlowService:
         return draft
 
     def set_category(self, user_id: int, category: str) -> UserDraft:
+        """Сохраняет выбранную категорию заявки."""
+
         draft = self.get(user_id)
         draft.category = category
         draft.step = "awaiting_problem_text"
         return draft
 
     def set_problem_text(self, user_id: int, text: str) -> UserDraft:
+        """Сохраняет описание проблемы и переводит заявку к подтверждению."""
+
         draft = self.get(user_id)
         draft.problem_text = text
         draft.step = "awaiting_confirmation"
@@ -46,6 +58,8 @@ class UserFlowService:
         text: str | None = None,
         attachments: list[Any] | None = None,
     ) -> UserDraft:
+        """Добавляет текст или вложения к текущему черновику заявки."""
+
         draft = self.get(user_id)
         normalized = (text or "").strip()
         if normalized:
@@ -56,4 +70,3 @@ class UserFlowService:
         if attachments:
             draft.attachments.extend(attachments)
         return draft
-

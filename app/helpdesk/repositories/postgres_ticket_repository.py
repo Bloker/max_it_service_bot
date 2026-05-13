@@ -1,3 +1,5 @@
+"""PostgreSQL-реализация репозитория заявок."""
+
 import asyncio
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -7,7 +9,7 @@ from app.helpdesk.repositories.types import TicketActionResult
 
 
 class PostgresTicketRepository:
-    """PostgreSQL-backed repository compatible with current ticket service."""
+    """PostgreSQL-репозиторий заявок для рабочего режима."""
 
     def __init__(
         self,
@@ -38,6 +40,8 @@ class PostgresTicketRepository:
         return psycopg.connect(self._conninfo, row_factory=dict_row)
 
     async def _ensure_initialized(self) -> None:
+        """Лениво создает таблицу заявок и индексы."""
+
         if self._initialized:
             return
         async with self._lock:
@@ -147,6 +151,8 @@ class PostgresTicketRepository:
         requester_phone: str | None,
         requester_department: str | None,
     ) -> Ticket:
+        """Создает заявку без промежуточного PENDING ticket_id."""
+
         now = datetime.now(tz=timezone.utc)
         with self._connect() as conn:
             with conn.cursor() as cur:

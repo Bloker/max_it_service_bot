@@ -1,4 +1,6 @@
-﻿import asyncio
+"""Общие обработчики сообщений MAX и сценарии HelpDesk."""
+
+import asyncio
 import logging
 import re
 from datetime import datetime
@@ -16,6 +18,7 @@ from app.admin.services.access_service import (
     can_view_user_menu,
     is_admin,
 )
+from app.bot.notifications import notify_user_ticket_closed
 from app.common.user_helpers import get_first_name, get_full_name
 from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_admin_request_keyboard,
@@ -38,9 +41,19 @@ from app.helpdesk.services.ticket_service import (
     parse_specialist_command,
 )
 from app.helpdesk.texts import specialist_texts, user_texts
-from app.network.keyboards.network_keyboards import build_network_menu_keyboard
-from app.network.runtime import get_network_session_service, get_network_tools_service
+from app.network.keyboards.network_keyboards import (
+    build_network_main_menu_keyboard,
+    build_network_menu_keyboard,
+)
+from app.network.runtime import (
+    get_netarium_guest_service,
+    get_network_session_service,
+    get_network_tools_service,
+    get_wifi_voucher_service,
+)
+from app.network.netarium.guest_texts import render_guest_search_result
 from app.network.texts import network_texts
+from app.network.wifi.voucher_texts import render_voucher_search_result
 from config.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -63,6 +76,8 @@ _NON_FORWARDABLE_ATTACHMENT_MARKERS = (
 
 
 def _resolve_replied_mid(event: MessageCreated) -> str | None:
+    """Возвращает ID сообщения, на которое ответил пользователь."""
+
     linked = event.message.link
     if not linked or not linked.message:
         return None
@@ -70,6 +85,8 @@ def _resolve_replied_mid(event: MessageCreated) -> str | None:
 
 
 def _build_menu_for_user(user_id: int, cfg):
+    """Собирает меню пользователя через текущий реестр доступа."""
+
     return _build_menu_for_user_with_registry(
         user_id=user_id,
         cfg=cfg,
@@ -78,6 +95,8 @@ def _build_menu_for_user(user_id: int, cfg):
 
 
 def _resolve_role_sets(cfg, access_registry):
+    """Объединяет роли из .env и реестра пользователей."""
+
     admin_ids = set(cfg.bot.admin_ids) | set(access_registry.get_ids_by_role("admin"))
     specialist_ids = set(cfg.bot.it_specialist_ids) | set(
         access_registry.get_ids_by_role("IT specialist")
@@ -87,6 +106,8 @@ def _resolve_role_sets(cfg, access_registry):
 
 
 def _build_menu_for_user_with_registry(user_id: int, cfg, access_registry):
+    """Собирает главное меню с учетом роли и функций отеля."""
+
     admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
     can_view_service = can_view_service_functions(
         user_id=user_id,
@@ -120,6 +141,8 @@ def _has_user_access(
     banned_user_ids: tuple[int, ...],
     access_registry,
 ) -> bool:
+    """Проверяет доступ пользователя к диалогу с ботом."""
+
     if user_id in set(banned_user_ids):
         return False
     admin_ids, specialist_ids, user_ids = _resolve_role_sets(cfg, access_registry)
@@ -133,6 +156,8 @@ def _has_user_access(
 
 
 def _extract_shared_phone(event: MessageCreated) -> str | None:
+    """Извлекает телефон из contact attachment MAX."""
+
     attachments = list(getattr(event.message.body, "attachments", None) or [])
     for attachment in attachments:
         att_type = str(getattr(attachment, "type", "")).lower()
@@ -150,6 +175,8 @@ def _extract_shared_phone(event: MessageCreated) -> str | None:
 
 
 def _extract_ticket_media_attachments(event: MessageCreated) -> list[Any]:
+    """Отбирает вложения, которые можно переслать в заявку."""
+
     collected: list[Any] = []
     attachments = list(getattr(event.message.body, "attachments", None) or [])
     for attachment in attachments:
@@ -162,18 +189,24 @@ def _extract_ticket_media_attachments(event: MessageCreated) -> list[Any]:
 
 
 def register(dp) -> None:
+    """Регистрирует общий обработчик сообщений и сценарии HelpDesk."""
+
     cfg = get_config()
     tickets = get_ticket_service()
     ticket_links = get_ticket_link_service()
     user_flow = get_user_flow_service()
     network_session = get_network_session_service()
     network_tools = get_network_tools_service()
+    wifi_vouchers = get_wifi_voucher_service()
+    netarium_guests = get_netarium_guest_service()
     access_registry = get_user_access_registry()
     group_chat_id = cfg.bot.group_chat_id
     problem_collect_delay_seconds = 20
     problem_collect_tasks: dict[int, asyncio.Task[None]] = {}
 
     def _cancel_problem_collect_task(user_id: int) -> None:
+        """Отменяет отложенную автоотправку черновика заявки."""
+
         task = problem_collect_tasks.get(user_id)
         if task is None:
             return
@@ -184,12 +217,16 @@ def register(dp) -> None:
             task.cancel()
 
     def _get_registered_user_profile(user_id: int) -> tuple[str, str | None]:
+        """Возвращает имя и телефон зарегистрированного пользователя."""
+
         for item in access_registry.list_users():
             if item.user_id == user_id:
                 return item.user_name, item.phone
         return f"ID {user_id}", None
 
     async def _send_delayed_submit(user_id: int, bot) -> None:
+        """Автоматически отправляет черновик после паузы в сообщениях."""
+
         try:
             await asyncio.sleep(problem_collect_delay_seconds)
             draft = user_flow.get(user_id)
@@ -236,6 +273,8 @@ def register(dp) -> None:
                 problem_collect_tasks.pop(user_id, None)
 
     def _schedule_problem_submit(user_id: int, bot) -> None:
+        """Перезапускает таймер автоотправки черновика."""
+
         _cancel_problem_collect_task(user_id)
         logger.info(
             "Auto-submit timer scheduled: user_id=%s delay=%ss",
@@ -255,6 +294,8 @@ def register(dp) -> None:
         created_at: str,
         title: str,
     ) -> int:
+        """Уведомляет администраторов о новой заявке на доступ."""
+
         admin_buttons = [build_admin_request_keyboard(sender_id)]
         admin_ids, _, _ = _resolve_role_sets(cfg, access_registry)
         delivered = 0
@@ -301,6 +342,8 @@ def register(dp) -> None:
         requester_phone: str | None,
         requester_department: str | None,
     ) -> bool:
+        """Создает заявку из черновика и отправляет карточку в IT-группу."""
+
         _cancel_problem_collect_task(sender_id)
         draft = user_flow.get(sender_id)
         if not draft.category or not draft.problem_text:
@@ -840,6 +883,9 @@ def register(dp) -> None:
                     parse_mode=ParseMode.HTML,
                 )
 
+            if action == "close":
+                await notify_user_ticket_closed(event._ensure_bot(), result.ticket)
+
             await event.message.answer(
                 f"Обновлено: {result.ticket.ticket_id} -> {result.ticket.status.value}"
             )
@@ -900,6 +946,39 @@ def register(dp) -> None:
                 and text
                 and not text.startswith("/")
             ):
+                if net_state.pending_tool == "wifi_voucher":
+                    logger.info("WiFi voucher room received: user_id=%s room=%s", sender_id, text)
+                    # Сначала проверяем номер в Netarium, чтобы не запускать
+                    # долгий поиск по страницам WiFi.link для несуществующей комнаты.
+                    guest_result = await netarium_guests.find_by_room(text)
+                    if not guest_result.ok:
+                        await event.message.answer(
+                            text=render_guest_search_result(guest_result),
+                            attachments=[build_network_main_menu_keyboard()],
+                            parse_mode=ParseMode.HTML,
+                        )
+                        return
+                    if not guest_result.room_exists:
+                        await event.message.answer(
+                            text="Такого номера не существует",
+                            attachments=[build_network_main_menu_keyboard()],
+                        )
+                        return
+
+                    # WiFi-сценарий остается активным после ответа: следующий
+                    # текст пользователя снова считается номером комнаты.
+                    result = await wifi_vouchers.find_first_by_room(text)
+                    await event.message.answer(
+                        text=render_voucher_search_result(result),
+                        parse_mode=ParseMode.HTML,
+                    )
+                    await event.message.answer(
+                        text=render_guest_search_result(guest_result),
+                        attachments=[build_network_main_menu_keyboard()],
+                        parse_mode=ParseMode.HTML,
+                    )
+                    return
+
                 logger.info(
                     "Network target received: user_id=%s tool=%s target=%s",
                     sender_id,

@@ -1,4 +1,6 @@
-﻿import logging
+"""Callback-обработчики раздела сетевых инструментов."""
+
+import logging
 
 from maxapi.types import MessageCallback
 
@@ -11,6 +13,7 @@ from app.admin.services.access_service import (
 from app.helpdesk.keyboards.helpdesk_keyboards import build_main_menu_keyboard
 from app.network.keyboards.network_keyboards import (
     build_device_type_keyboard,
+    build_network_main_menu_keyboard,
     build_network_menu_keyboard,
 )
 from app.network.payloads import NetworkMenuPayload
@@ -22,12 +25,16 @@ logger = logging.getLogger(__name__)
 
 
 def register(dp) -> None:
+    """Регистрирует callback-обработчик сетевого меню."""
+
     cfg = get_config()
     network_tools = get_network_tools_service()
     network_session = get_network_session_service()
     access_registry = get_user_access_registry()
 
     def _resolve_role_sets():
+        """Объединяет роли админов и IT из .env и реестра."""
+
         admin_ids = set(cfg.bot.admin_ids) | set(access_registry.get_ids_by_role("admin"))
         specialist_ids = set(cfg.bot.it_specialist_ids) | set(
             access_registry.get_ids_by_role("IT specialist")
@@ -35,6 +42,8 @@ def register(dp) -> None:
         return tuple(admin_ids), tuple(specialist_ids)
 
     def _build_main_menu_for_user(user_id: int):
+        """Собирает главное меню после выхода из сетевых инструментов."""
+
         admin_ids, specialist_ids = _resolve_role_sets()
         can_view_service = can_view_service_functions(
             user_id=user_id,
@@ -99,13 +108,15 @@ def register(dp) -> None:
             await event.answer(notification="Главное меню")
             return
 
-        if action == "wifi":
-            result = network_tools.wifi_template()
+        if action in {"wifi", "wifi_voucher"}:
+            # WiFi работает как режим ввода: после каждого номера можно сразу
+            # отправлять следующий, пока пользователь не вернется в главное меню.
+            network_session.expect_target(actor_id, "wifi_voucher")
             await event.message.answer(
-                text=network_texts.render_result(result.title, result.ok, result.details),
-                attachments=[build_network_menu_keyboard()],
+                text=network_texts.WIFI_ROOM_PROMPT_TEXT,
+                attachments=[build_network_main_menu_keyboard()],
             )
-            await event.answer(notification="Шаблон Wi-Fi")
+            await event.answer(notification="Ожидаю номер комнаты")
             return
 
         if action == "device_menu":

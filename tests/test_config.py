@@ -18,6 +18,10 @@ class ConfigTests(unittest.TestCase):
             "MAX_TICKET_PG_PASSWORD": "secret",
             "MAX_TICKET_PG_SSLMODE": "disable",
             "MAX_TICKET_PG_CONNECT_TIMEOUT_SEC": "5",
+            "MAX_WIFI_LINK_EMAIL": "",
+            "MAX_WIFI_LINK_PASSWORD": "",
+            "MAX_WIFI_LINK_MAX_PAGES": "20",
+            "MAX_NETARIUM_API_KEY": "",
         }
         with patch.dict(os.environ, env, clear=False):
             cfg = get_config()
@@ -33,6 +37,16 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.bot.polling_limit, 100)
         self.assertEqual(cfg.bot.polling_timeout_sec, 30)
         self.assertEqual(cfg.bot.polling_min_interval_sec, 0.55)
+        self.assertEqual(cfg.wifi_link.base_url, "https://lk.wi-fi.link")
+        self.assertEqual(cfg.wifi_link.timeout_sec, 10)
+        self.assertEqual(cfg.wifi_link.max_pages, 20)
+        self.assertEqual(cfg.wifi_link.cache_ttl_sec, 120)
+        self.assertFalse(cfg.wifi_link.is_configured)
+        self.assertEqual(cfg.netarium.base_url, "http://192.168.2.34:8081")
+        self.assertEqual(cfg.netarium.object_class, "61746224-5eac-4663-a7db-396beffec01c")
+        self.assertEqual(cfg.netarium.timeout_sec, 10)
+        self.assertEqual(cfg.netarium.cache_ttl_sec, 120)
+        self.assertFalse(cfg.netarium.is_configured)
 
     def test_postgres_backend_requires_host(self) -> None:
         env = {

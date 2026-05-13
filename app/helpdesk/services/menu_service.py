@@ -1,4 +1,9 @@
-﻿def get_helpdesk_commands() -> tuple[str, ...]:
+"""Статические списки команд и категорий HelpDesk."""
+
+
+def get_helpdesk_commands() -> tuple[str, ...]:
+    """Возвращает список slash-команд HelpDesk."""
+
     return (
         "/start",
         "/menu",
@@ -16,6 +21,8 @@
 
 
 def get_ticket_categories() -> list[str]:
+    """Возвращает список категорий заявок."""
+
     return [
         "Доступы и учетные записи",
         "ПК и программное обеспечение",

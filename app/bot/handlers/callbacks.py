@@ -1,4 +1,6 @@
-﻿import logging
+"""Callback-обработчики пользовательского, админского и HelpDesk-меню."""
+
+import logging
 
 from maxapi.enums.message_link_type import MessageLinkType
 from maxapi.enums.parse_mode import ParseMode
@@ -14,6 +16,7 @@ from app.admin.services.access_service import (
     can_view_user_menu,
     is_admin,
 )
+from app.bot.notifications import notify_user_ticket_closed
 from app.common.user_helpers import get_full_name
 from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_admin_hotel_select_keyboard,
@@ -50,12 +53,16 @@ logger = logging.getLogger(__name__)
 
 
 def _build_user_ticket_list_text(lines: list[str]) -> str:
+    """Собирает текст списка пользовательских заявок."""
+
     if not lines:
         return user_texts.NO_TICKETS_TEXT
     return f"{user_texts.MY_TICKETS_HEADER}\n" + "\n".join(lines)
 
 
 def _build_single_pending_text(item) -> str:
+    """Форматирует одну заявку на доступ для администратора."""
+
     requested_at = str(item.requested_at or "")
     requested_at = requested_at.replace("T", " ")
     requested_at = requested_at.split("+", maxsplit=1)[0]
@@ -70,6 +77,8 @@ def _build_single_pending_text(item) -> str:
 
 
 def _find_pending_item(access_registry, user_id: int):
+    """Ищет pending-заявку пользователя в реестре."""
+
     for item in access_registry.list_pending():
         if item.user_id == user_id:
             return item
@@ -77,6 +86,8 @@ def _find_pending_item(access_registry, user_id: int):
 
 
 def _build_users_text(users) -> str:
+    """Форматирует список пользователей для админского меню."""
+
     if not users:
         return "Пользователей в базе нет."
     lines = ["Список пользователей:"]
@@ -92,6 +103,8 @@ def _build_open_tickets_text(items) -> str:
 
 
 async def _send_ticket_card_from_list(event: MessageCallback, ticket, ticket_links) -> None:
+    """Отправляет карточку заявки, по возможности reply к исходному сообщению."""
+
     group_message_id = ticket_links.get_group_message_id(ticket.ticket_id)
     if group_message_id:
         try:
@@ -117,6 +130,8 @@ async def _send_ticket_card_from_list(event: MessageCallback, ticket, ticket_lin
 
 
 def _build_user_card_text(item, access_registry) -> str:
+    """Форматирует карточку пользователя для администратора."""
+
     hotel_label = access_registry.get_hotel_label(item.hotel_code) or "-"
     lines = [
         "Пользователь:",
@@ -131,6 +146,8 @@ def _build_user_card_text(item, access_registry) -> str:
 
 
 def _find_user_item(access_registry, user_id: int):
+    """Ищет зарегистрированного пользователя по MAX ID."""
+
     for item in access_registry.list_users():
         if item.user_id == user_id:
             return item
@@ -138,6 +155,8 @@ def _find_user_item(access_registry, user_id: int):
 
 
 def _resolve_role_sets(cfg, access_registry):
+    """Объединяет роли из .env и реестра пользователей."""
+
     admin_ids = set(cfg.bot.admin_ids) | set(access_registry.get_ids_by_role("admin"))
     specialist_ids = set(cfg.bot.it_specialist_ids) | set(
         access_registry.get_ids_by_role("IT specialist")
@@ -147,6 +166,8 @@ def _resolve_role_sets(cfg, access_registry):
 
 
 def _build_menu_for_user(user_id: int, cfg, access_registry):
+    """Собирает главное меню с учетом роли и функций отеля."""
+
     admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
     can_view_service = can_view_service_functions(
         user_id=user_id,
@@ -180,6 +201,8 @@ def _has_user_access(
     banned_user_ids: tuple[int, ...],
     access_registry,
 ) -> bool:
+    """Проверяет доступ пользователя к callback-действиям меню."""
+
     if user_id in set(banned_user_ids):
         return False
     admin_ids, specialist_ids, user_ids = _resolve_role_sets(cfg, access_registry)
@@ -193,6 +216,8 @@ def _has_user_access(
 
 
 def register(dp) -> None:
+    """Регистрирует callback-обработчики пользовательского и IT-меню."""
+
     cfg = get_config()
     categories = get_ticket_categories()
     user_flow = get_user_flow_service()
@@ -1082,4 +1107,6 @@ def register(dp) -> None:
             attachments=[build_ticket_actions_keyboard(result.ticket.ticket_id)],
             parse_mode=ParseMode.HTML,
         )
+        if action == "close":
+            await notify_user_ticket_closed(event._ensure_bot(), result.ticket)
         await event.answer(notification="Статус обновлён")

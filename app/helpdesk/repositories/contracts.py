@@ -1,3 +1,5 @@
+"""Protocol-контракт репозитория заявок."""
+
 from collections.abc import Iterable
 from typing import Protocol
 
@@ -6,6 +8,8 @@ from app.helpdesk.repositories.types import TicketActionResult
 
 
 class TicketRepository(Protocol):
+    """Контракт хранилища заявок для разных backend-реализаций."""
+
     async def create_ticket(
         self,
         requester_user_id: int,

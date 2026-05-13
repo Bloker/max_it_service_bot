@@ -1,4 +1,6 @@
-﻿import asyncio
+"""SQLite-реализация репозитория заявок."""
+
+import asyncio
 import sqlite3
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -9,7 +11,7 @@ from app.helpdesk.repositories.types import TicketActionResult
 
 
 class SqliteTicketRepository:
-    """SQLite-backed repository with minimal stage-4 ticket model."""
+    """SQLite-репозиторий заявок для локального хранения."""
 
     def __init__(self, db_path: str) -> None:
         self._db_path = Path(db_path)
@@ -17,6 +19,8 @@ class SqliteTicketRepository:
         self._initialized = False
 
     async def _ensure_initialized(self) -> None:
+        """Лениво создает таблицы и недостающие колонки."""
+
         if self._initialized:
             return
         async with self._lock:
@@ -134,6 +138,8 @@ class SqliteTicketRepository:
         requester_phone: str | None,
         requester_department: str | None,
     ) -> Ticket:
+        """Создает заявку внутри синхронной SQLite-транзакции."""
+
         now = datetime.now(tz=timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")

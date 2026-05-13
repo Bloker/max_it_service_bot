@@ -1,3 +1,5 @@
+"""Фабрика singleton-реестра доступа пользователей."""
+
 from app.admin.services.postgres_user_access_registry import PostgresUserAccessRegistry
 from app.admin.services.user_access_registry import UserAccessRegistry
 from config.config import get_config

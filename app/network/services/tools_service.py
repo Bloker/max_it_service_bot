@@ -1,4 +1,6 @@
-﻿import logging
+"""Сервис запуска сетевых диагностических инструментов."""
+
+import logging
 
 from app.network.adapters.local_diagnostics_adapter import LocalDiagnosticsAdapter
 from app.network.models.diagnostic import DiagnosticResult
@@ -12,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 
 class NetworkToolsService:
+    """Единая точка запуска сетевых инструментов с проверкой политики."""
+
     def __init__(
         self,
         adapter: LocalDiagnosticsAdapter,
@@ -25,6 +29,8 @@ class NetworkToolsService:
         self.templates = templates
 
     def _validate_target(self, raw_target: str) -> tuple[bool, str, str]:
+        """Нормализует target и проверяет его по корпоративной политике."""
+
         target = normalize_target(raw_target)
         ok, error = validate_target_format(target)
         if not ok:
@@ -38,6 +44,8 @@ class NetworkToolsService:
         return True, "", target
 
     async def ping(self, target: str) -> DiagnosticResult:
+        """Запускает ping, если инструмент включен в конфиге."""
+
         if not self.features.ping:
             return DiagnosticResult(ok=False, title="Ping", details="Инструмент отключен в конфиге.")
         ok, reason, normalized = self._validate_target(target)
@@ -46,6 +54,8 @@ class NetworkToolsService:
         return await self.adapter.ping(normalized)
 
     async def dns_lookup(self, target: str) -> DiagnosticResult:
+        """Запускает DNS lookup для разрешенного target."""
+
         if not self.features.dns_lookup:
             return DiagnosticResult(ok=False, title="DNS lookup", details="Инструмент отключен в конфиге.")
         ok, reason, normalized = self._validate_target(target)
@@ -54,6 +64,8 @@ class NetworkToolsService:
         return await self.adapter.dns_lookup(normalized)
 
     async def host_check(self, target: str) -> DiagnosticResult:
+        """Проверяет DNS и ping для разрешенного target."""
+
         if not self.features.host_check:
             return DiagnosticResult(ok=False, title="Host check", details="Инструмент отключен в конфиге.")
         ok, reason, normalized = self._validate_target(target)
@@ -62,6 +74,8 @@ class NetworkToolsService:
         return await self.adapter.host_check(normalized)
 
     async def traceroute(self, target: str) -> DiagnosticResult:
+        """Запускает traceroute для разрешенного target."""
+
         if not self.features.traceroute:
             return DiagnosticResult(ok=False, title="Traceroute", details="Инструмент отключен в конфиге.")
         ok, reason, normalized = self._validate_target(target)
@@ -70,6 +84,8 @@ class NetworkToolsService:
         return await self.adapter.traceroute(normalized)
 
     async def nslookup(self, target: str) -> DiagnosticResult:
+        """Запускает nslookup для разрешенного target."""
+
         if not self.features.nslookup:
             return DiagnosticResult(ok=False, title="NSLookup", details="Инструмент отключен в конфиге.")
         ok, reason, normalized = self._validate_target(target)
@@ -78,6 +94,8 @@ class NetworkToolsService:
         return await self.adapter.nslookup(normalized)
 
     async def whois(self, target: str) -> DiagnosticResult:
+        """Запускает whois для разрешенного target."""
+
         if not self.features.whois:
             return DiagnosticResult(ok=False, title="Whois", details="Инструмент отключен в конфиге.")
         ok, reason, normalized = self._validate_target(target)
@@ -86,9 +104,13 @@ class NetworkToolsService:
         return await self.adapter.whois(normalized)
 
     def wifi_template(self) -> DiagnosticResult:
+        """Возвращает текстовый шаблон диагностики Wi-Fi."""
+
         return DiagnosticResult(ok=True, title="Wi-Fi template", details=self.templates.wifi_troubleshooting())
 
     def device_template(self, device_type: str) -> DiagnosticResult:
+        """Возвращает шаблон диагностики для типа устройства."""
+
         if not self.policy.is_allowed_device_type(device_type):
             logger.info("Device template rejected by policy: %s", device_type)
             return DiagnosticResult(
@@ -103,6 +125,8 @@ class NetworkToolsService:
         )
 
     async def run_tool(self, tool: str, target: str) -> DiagnosticResult:
+        """Маршрутизирует текстовый код инструмента к конкретной диагностике."""
+
         logger.info("Network tool requested: tool=%s target=%s", tool, target)
         if tool == "ping":
             return await self.ping(target)

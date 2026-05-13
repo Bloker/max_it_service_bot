@@ -1,4 +1,6 @@
-﻿import logging
+"""Локальные адаптеры сетевой диагностики."""
+
+import logging
 import platform
 import re
 import socket
@@ -12,13 +14,15 @@ logger = logging.getLogger(__name__)
 
 
 class LocalDiagnosticsAdapter:
-    """Local OS adapter. Designed for future swap to external diagnostic service."""
+    """Адаптер локальных ОС-утилит для сетевой диагностики."""
 
     def __init__(self, runner: CommandRunner) -> None:
         self.runner = runner
         self.is_windows = platform.system().lower().startswith("win")
 
     async def ping(self, target: str) -> DiagnosticResult:
+        """Проверяет доступность хоста через ping."""
+
         executable = "ping"
         if which(executable) is None:
             return DiagnosticResult(ok=False, title="Ping", details="Утилита ping недоступна.")
@@ -27,7 +31,7 @@ class LocalDiagnosticsAdapter:
         if self.is_windows:
             args = [executable, "-n", str(sent_count), "-w", "1000", target]
         else:
-            # Ubuntu-friendly profile: 5 packets, 1s reply timeout, hard deadline.
+            # Профиль для Ubuntu: 5 пакетов, timeout ответа 1с, общий deadline.
             args = [executable, "-c", str(sent_count), "-W", "1", "-w", "8", target]
 
         ok, output = await self.runner.run(args, timeout_sec=max(self.runner.timeout_sec, 12))
@@ -40,6 +44,8 @@ class LocalDiagnosticsAdapter:
         return DiagnosticResult(ok=ok, title="Ping", details=details)
 
     async def dns_lookup(self, target: str) -> DiagnosticResult:
+        """Возвращает IP-адреса, найденные через системный DNS resolver."""
+
         try:
             addresses = socket.gethostbyname_ex(target)[2]
         except Exception as exc:
@@ -53,6 +59,8 @@ class LocalDiagnosticsAdapter:
         return DiagnosticResult(ok=True, title="DNS lookup", details=details)
 
     async def host_check(self, target: str) -> DiagnosticResult:
+        """Проверяет DNS-resolve и доступность хоста через ping."""
+
         try:
             socket.getaddrinfo(target, None)
         except Exception as exc:
@@ -68,6 +76,8 @@ class LocalDiagnosticsAdapter:
         )
 
     async def traceroute(self, target: str) -> DiagnosticResult:
+        """Строит маршрут до целевого хоста."""
+
         executable = "tracert" if self.is_windows else "traceroute"
         if which(executable) is None:
             return DiagnosticResult(
@@ -86,6 +96,8 @@ class LocalDiagnosticsAdapter:
         return DiagnosticResult(ok=ok, title="Traceroute", details=output)
 
     async def nslookup(self, target: str) -> DiagnosticResult:
+        """Выполняет nslookup для целевого хоста."""
+
         executable = "nslookup"
         if which(executable) is None:
             return DiagnosticResult(
@@ -98,6 +110,8 @@ class LocalDiagnosticsAdapter:
         return DiagnosticResult(ok=ok, title="NSLookup", details=output)
 
     async def whois(self, target: str) -> DiagnosticResult:
+        """Выполняет whois, если утилита доступна на сервере."""
+
         executable = "whois"
         if which(executable) is None:
             return DiagnosticResult(
@@ -113,6 +127,8 @@ class LocalDiagnosticsAdapter:
         return DiagnosticResult(ok=ok, title="Whois", details=output)
 
     def _build_ping_summary(self, target: str, ok: bool, output: str, sent_count: int) -> str:
+        """Собирает короткую человекочитаемую сводку ping."""
+
         sent, received, loss_pct = self._extract_ping_packets(output, sent_count=sent_count)
         avg_ms = self._extract_ping_avg_ms(output)
 
@@ -140,6 +156,8 @@ class LocalDiagnosticsAdapter:
         *,
         sent_count: int,
     ) -> tuple[int | None, int | None, int | None]:
+        """Извлекает количество пакетов и процент потерь из вывода ping."""
+
         windows = re.search(
             r"(?is)(?:sent|отправлено)\s*=\s*(\d+).*?"
             r"(?:received|получено)\s*=\s*(\d+).*?"
@@ -171,6 +189,8 @@ class LocalDiagnosticsAdapter:
 
     @staticmethod
     def _extract_ping_avg_ms(output: str) -> int | None:
+        """Извлекает среднюю задержку из вывода ping."""
+
         windows = re.search(
             r"(?i)(?:average|среднее)\s*=\s*<?\s*(\d+)\s*(?:ms|мс)",
             output,
@@ -190,4 +210,3 @@ class LocalDiagnosticsAdapter:
             return int(round(sum(sample_times) / len(sample_times)))
 
         return None
-

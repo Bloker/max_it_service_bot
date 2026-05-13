@@ -1,4 +1,6 @@
-﻿from maxapi.types import Command, MessageCreated
+"""Slash-команды личного диалога с ботом."""
+
+from maxapi.types import Command, MessageCreated
 
 from app.admin.runtime import get_user_access_registry
 from app.admin.services.access_service import (
@@ -25,6 +27,8 @@ START_TEXT_TEMPLATE = "👋 Привет, {name}!\n\nIT Help Desk готов п�
 
 
 def _build_help_text() -> str:
+    """Собирает текст справки по доступным командам."""
+
     commands = get_helpdesk_commands()
     commands_lines = [f"• {command}" for command in commands]
     commands_block = "\n".join(commands_lines)
@@ -37,6 +41,8 @@ def _build_help_text() -> str:
 
 
 def _resolve_role_sets(cfg, access_registry):
+    """Объединяет роли из .env и реестра пользователей."""
+
     admin_ids = set(cfg.bot.admin_ids) | set(access_registry.get_ids_by_role("admin"))
     specialist_ids = set(cfg.bot.it_specialist_ids) | set(
         access_registry.get_ids_by_role("IT specialist")
@@ -46,6 +52,8 @@ def _resolve_role_sets(cfg, access_registry):
 
 
 def _build_menu_for_user(user_id: int, cfg, access_registry):
+    """Собирает главное меню с учетом роли и привязки к отелю."""
+
     admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
     can_view_service = can_view_service_functions(
         user_id=user_id,
@@ -79,6 +87,8 @@ def _has_user_access(
     banned_user_ids: tuple[int, ...],
     access_registry,
 ) -> bool:
+    """Проверяет, разрешен ли пользователю доступ к боту."""
+
     if user_id in set(banned_user_ids):
         return False
     admin_ids, specialist_ids, user_ids = _resolve_role_sets(cfg, access_registry)
@@ -92,6 +102,8 @@ def _has_user_access(
 
 
 def _denied_text() -> str:
+    """Возвращает текст отказа с предложением регистрации."""
+
     return (
         "Доступ к боту ограничен.\n"
         "Нажмите кнопку ниже и поделитесь контактом для регистрации."
@@ -99,6 +111,8 @@ def _denied_text() -> str:
 
 
 async def _require_dialog(event: MessageCreated) -> bool:
+    """Ограничивает команду личным диалогом с ботом."""
+
     if event.message.recipient.chat_type == "dialog":
         return True
     await event.message.answer("Эта команда доступна только в личном чате с ботом.")
@@ -106,6 +120,8 @@ async def _require_dialog(event: MessageCreated) -> bool:
 
 
 def register(dp) -> None:
+    """Регистрирует slash-команды бота."""
+
     cfg = get_config()
     access_registry = get_user_access_registry()
     user_flow = get_user_flow_service()

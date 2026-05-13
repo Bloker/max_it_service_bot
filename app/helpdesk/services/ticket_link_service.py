@@ -1,5 +1,7 @@
+"""In-memory связь заявок с сообщениями MAX."""
+
 class TicketLinkService:
-    """Ephemeral runtime mapping between ticket ids and group chat message ids."""
+    """Временное runtime-сопоставление заявок и сообщений."""
 
     def __init__(self) -> None:
         self._ticket_to_group_mid: dict[str, str] = {}
@@ -29,4 +31,3 @@ class TicketLinkService:
 
     def get_ticket_id_by_user_message(self, user_message_id: str) -> str | None:
         return self._user_mid_to_ticket.get(str(user_message_id))
-

@@ -1,4 +1,6 @@
-﻿from maxapi.types import ButtonsPayload, CallbackButton, RequestContactButton
+"""Фабрики inline-клавиатур пользовательского и IT-меню."""
+
+from maxapi.types import ButtonsPayload, CallbackButton, RequestContactButton
 
 from app.helpdesk.payloads import SpecialistTicketPayload, UserMenuPayload
 
@@ -15,6 +17,8 @@ def build_main_menu_keyboard(
     can_use_wifi_help: bool = False,
     can_use_tv_help: bool = False,
 ):
+    """Собирает главное меню с учетом роли и доступных функций."""
+
     if can_use_wifi_help:
         buttons = [
             [CallbackButton(text="Проблема Wi-Fi у гостя", payload=UserMenuPayload(action="wifi").pack())],
@@ -68,6 +72,8 @@ def build_main_menu_keyboard(
 
 
 def build_categories_keyboard(categories: list[str]):
+    """Собирает клавиатуру выбора категории заявки."""
+
     rows = [
         [CallbackButton(text=category, payload=UserMenuPayload(action="cat", value=category).pack())]
         for category in categories
@@ -77,6 +83,8 @@ def build_categories_keyboard(categories: list[str]):
 
 
 def build_confirm_keyboard():
+    """Собирает клавиатуру подтверждения черновика заявки."""
+
     return ButtonsPayload(
         buttons=[
             [CallbackButton(text="Отправить", payload=UserMenuPayload(action="confirm_send").pack())],
@@ -221,6 +229,8 @@ def build_admin_menu_keyboard():
 
 
 def build_admin_pending_keyboard(user_ids: list[int]):
+    """Собирает список pending-заявок на доступ для администратора."""
+
     rows: list[list[CallbackButton]] = []
     for user_id in user_ids:
         rows.append(
@@ -292,6 +302,8 @@ def build_admin_role_select_keyboard(user_id: int):
 
 
 def build_admin_users_keyboard(user_entries: list[tuple[int, str]]):
+    """Собирает клавиатуру списка зарегистрированных пользователей."""
+
     rows: list[list[CallbackButton]] = []
     for user_id, user_name in user_entries:
         label = (user_name or f"ID {user_id}").strip()
@@ -357,6 +369,8 @@ def build_registration_keyboard():
 
 
 def build_ticket_actions_keyboard(ticket_id: str):
+    """Собирает кнопки действий специалиста по заявке."""
+
     return ButtonsPayload(
         buttons=[
             [
@@ -386,6 +400,8 @@ def build_ticket_actions_keyboard(ticket_id: str):
 
 
 def build_open_tickets_keyboard(tickets, *, max_buttons: int = 20):
+    """Собирает компактную клавиатуру открытых заявок."""
+
     rows: list[list[CallbackButton]] = []
     row: list[CallbackButton] = []
 

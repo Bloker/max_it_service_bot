@@ -1,5 +1,12 @@
-﻿class NetworkTemplatesService:
+"""Текстовые шаблоны сетевой диагностики."""
+
+
+class NetworkTemplatesService:
+    """Генерирует текстовые шаблоны для ручной сетевой диагностики."""
+
     def wifi_troubleshooting(self) -> str:
+        """Возвращает базовый чек-лист диагностики Wi-Fi."""
+
         return (
             "Wi-Fi troubleshooting:\n"
             "1) Проверить SSID и уровень сигнала.\n"
@@ -10,6 +17,8 @@
         )
 
     def device_template(self, device_type: str) -> str:
+        """Возвращает чек-лист диагностики для типа устройства."""
+
         normalized = device_type.lower()
         if normalized in {"android_tv", "tv_box"}:
             return (

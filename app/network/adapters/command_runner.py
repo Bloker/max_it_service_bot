@@ -1,4 +1,6 @@
-﻿import asyncio
+"""Обертка над запуском системных команд."""
+
+import asyncio
 import locale
 import logging
 import platform
@@ -9,11 +11,15 @@ logger = logging.getLogger(__name__)
 
 
 class CommandRunner:
+    """Безопасно запускает системные сетевые утилиты с timeout и лимитом вывода."""
+
     def __init__(self, timeout_sec: int, max_output_chars: int) -> None:
         self.timeout_sec = timeout_sec
         self.max_output_chars = max_output_chars
 
     async def run(self, args: list[str], timeout_sec: int | None = None) -> tuple[bool, str]:
+        """Выполняет команду и возвращает статус успеха с нормализованным выводом."""
+
         if not args:
             return False, "Команда не задана."
         effective_timeout = timeout_sec if timeout_sec and timeout_sec > 0 else self.timeout_sec
@@ -59,12 +65,14 @@ class CommandRunner:
 
     @staticmethod
     def _decode_output(raw: bytes) -> str:
+        """Декодирует вывод системной утилиты с учетом ОС и локали."""
+
         if not raw:
             return ""
 
         preferred = locale.getpreferredencoding(False) or ""
         if platform.system().lower().startswith("win"):
-            # Windows console utilities are typically OEM-encoded.
+            # Консольные утилиты Windows обычно возвращают OEM-кодировку.
             encodings: list[str] = ["cp866", preferred, "cp1251", "utf-8"]
         else:
             encodings = [preferred, "utf-8", "cp1251", "cp866"]
@@ -86,4 +94,3 @@ class CommandRunner:
             return raw.decode(errors="replace")
         ranked.sort(key=lambda item: (item[0], item[1]))
         return ranked[0][2]
-

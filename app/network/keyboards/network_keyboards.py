@@ -1,4 +1,6 @@
-﻿from maxapi.types import ButtonsPayload, CallbackButton
+"""Фабрики inline-клавиатур сетевых инструментов."""
+
+from maxapi.types import ButtonsPayload, CallbackButton
 
 from app.network.payloads import NetworkMenuPayload
 
@@ -12,6 +14,25 @@ def build_network_menu_keyboard():
                     payload=NetworkMenuPayload(action="tool", value="ping").pack(),
                 ),
             ],
+            [
+                CallbackButton(
+                    text="WiFi",
+                    payload=NetworkMenuPayload(action="wifi").pack(),
+                ),
+            ],
+            [
+                CallbackButton(
+                    text="Главное меню",
+                    payload=NetworkMenuPayload(action="main_menu").pack(),
+                ),
+            ],
+        ]
+    ).pack()
+
+
+def build_network_main_menu_keyboard():
+    return ButtonsPayload(
+        buttons=[
             [
                 CallbackButton(
                     text="Главное меню",

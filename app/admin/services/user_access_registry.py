@@ -1,3 +1,5 @@
+"""Файловое хранение пользователей, ролей и заявок на доступ."""
+
 import json
 import threading
 from dataclasses import dataclass
@@ -7,6 +9,8 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class PendingAccessRequest:
+    """Заявка пользователя на доступ к боту."""
+
     user_id: int
     user_name: str
     phone: str | None
@@ -15,6 +19,8 @@ class PendingAccessRequest:
 
 @dataclass(frozen=True)
 class RegisteredUser:
+    """Зарегистрированный пользователь и его роль в боте."""
+
     user_id: int
     user_name: str
     phone: str | None
@@ -37,12 +43,16 @@ HOTEL_FEATURES: dict[str, tuple[str, ...]] = {
 
 
 class UserAccessRegistry:
+    """Файловый реестр пользователей, ролей и заявок на доступ."""
+
     def __init__(self, storage_path: str) -> None:
         self._path = Path(storage_path)
         self._lock = threading.Lock()
         self._path.parent.mkdir(parents=True, exist_ok=True)
 
     def _load(self) -> dict:
+        """Читает JSON-реестр и нормализует поврежденные секции."""
+
         if not self._path.exists():
             return {"approved": [], "pending": {}, "users": {}}
         try:
@@ -98,6 +108,8 @@ class UserAccessRegistry:
         return user_id in set(self.get_approved_ids())
 
     def request_access(self, user_id: int, user_name: str, phone: str | None = None) -> str:
+        """Создает заявку на доступ, если пользователь еще не одобрен."""
+
         with self._lock:
             data = self._load()
             approved = set(int(value) for value in data["approved"])
@@ -121,6 +133,8 @@ class UserAccessRegistry:
             return "created"
 
     def approve(self, user_id: int, role: str = "user") -> str:
+        """Одобряет pending-заявку и назначает роль."""
+
         with self._lock:
             data = self._load()
             normalized_role = self._normalize_role(role)
@@ -168,6 +182,8 @@ class UserAccessRegistry:
             return "rejected"
 
     def list_users(self) -> list[RegisteredUser]:
+        """Возвращает всех известных пользователей реестра."""
+
         with self._lock:
             data = self._load()
             result: list[RegisteredUser] = []
@@ -384,4 +400,3 @@ class UserAccessRegistry:
         if raw in HOTEL_LABELS:
             return raw
         return None
-

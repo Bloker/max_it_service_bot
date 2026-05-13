@@ -1,4 +1,6 @@
-﻿import asyncio
+"""In-memory реализация репозитория заявок."""
+
+import asyncio
 from collections import defaultdict
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -8,6 +10,8 @@ from app.helpdesk.repositories.types import TicketActionResult
 
 
 class InMemoryTicketRepository:
+    """In-memory репозиторий заявок для тестов и локального режима."""
+
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._counter = 0
@@ -23,6 +27,8 @@ class InMemoryTicketRepository:
         requester_phone: str | None = None,
         requester_department: str | None = None,
     ) -> Ticket:
+        """Создает заявку с последовательным человекочитаемым ID."""
+
         async with self._lock:
             self._counter += 1
             ticket_id = f"T-{self._counter:05d}"

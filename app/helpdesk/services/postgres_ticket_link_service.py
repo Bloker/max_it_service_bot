@@ -1,8 +1,10 @@
+"""PostgreSQL-связь заявок с сообщениями MAX."""
+
 import threading
 
 
 class PostgresTicketLinkService:
-    """Persistent ticket/message mapping in PostgreSQL."""
+    """Постоянное сопоставление заявок и сообщений в PostgreSQL."""
 
     def __init__(
         self,
