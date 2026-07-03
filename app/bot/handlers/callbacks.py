@@ -17,6 +17,7 @@ from app.admin.services.access_service import (
     is_admin,
 )
 from app.bot.notifications import notify_user_ticket_closed
+from app.bot.services.max_message_service import MaxMessageService
 from app.common.user_helpers import get_full_name
 from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_admin_hotel_select_keyboard,
@@ -25,6 +26,8 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_admin_role_select_keyboard,
     build_admin_user_actions_keyboard,
     build_admin_users_keyboard,
+    build_clarification_cancel_keyboard,
+    build_close_reply_cancel_keyboard,
     build_categories_keyboard,
     build_main_menu_keyboard,
     build_open_tickets_keyboard,
@@ -36,16 +39,28 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_wifi_scope_keyboard,
     build_tv_escalation_keyboard,
 )
-from app.helpdesk.payloads import SpecialistTicketPayload, UserMenuPayload
+from app.helpdesk.models.ticket import TicketStatus
+from app.helpdesk.payloads import (
+    ClarificationCancelPayload,
+    CloseReplyCancelPayload,
+    SpecialistTicketPayload,
+    UserMenuPayload,
+)
 from app.helpdesk.runtime import (
+    get_clarification_session_service,
+    get_close_reply_session_service,
+    get_ticket_clarification_service,
     get_ticket_link_service,
     get_ticket_service,
+    get_user_reply_session_service,
     get_user_flow_service,
 )
 from app.helpdesk.services.menu_service import get_ticket_categories
+from app.helpdesk.services.ticket_card_update_service import TicketCardUpdateService
 from app.helpdesk.texts import specialist_texts, user_texts
 from app.network.keyboards.network_keyboards import build_network_menu_keyboard
 from app.network.runtime import get_network_session_service
+from app.observability.runtime import get_observability_service
 from app.network.texts import network_texts
 from config.config import get_config
 
@@ -58,6 +73,14 @@ def _build_user_ticket_list_text(lines: list[str]) -> str:
     if not lines:
         return user_texts.NO_TICKETS_TEXT
     return f"{user_texts.MY_TICKETS_HEADER}\n" + "\n".join(lines)
+
+
+def _extract_message_id(sent_message) -> str | None:
+    """Достаёт MAX message_id из ответа отправки сообщения."""
+
+    body = getattr(getattr(sent_message, "message", None), "body", None)
+    mid = getattr(body, "mid", None)
+    return str(mid) if mid else None
 
 
 def _build_single_pending_text(item) -> str:
@@ -110,9 +133,9 @@ async def _send_ticket_card_from_list(event: MessageCallback, ticket, ticket_lin
         try:
             await event.message.answer(
                 text=specialist_texts.render_group_ticket(ticket),
-                attachments=[build_ticket_actions_keyboard(ticket.ticket_id)],
+                attachments=[build_ticket_actions_keyboard(ticket)],
                 link=NewMessageLink(type=MessageLinkType.REPLY, mid=group_message_id),
-                parse_mode=ParseMode.HTML,
+                format=ParseMode.HTML,
             )
             return
         except Exception:
@@ -124,8 +147,8 @@ async def _send_ticket_card_from_list(event: MessageCallback, ticket, ticket_lin
 
     await event.message.answer(
         text=specialist_texts.render_group_ticket(ticket),
-        attachments=[build_ticket_actions_keyboard(ticket.ticket_id)],
-        parse_mode=ParseMode.HTML,
+        attachments=[build_ticket_actions_keyboard(ticket)],
+        format=ParseMode.HTML,
     )
 
 
@@ -223,6 +246,19 @@ def register(dp) -> None:
     user_flow = get_user_flow_service()
     tickets = get_ticket_service()
     ticket_links = get_ticket_link_service()
+    clarification_sessions = get_clarification_session_service()
+    close_reply_sessions = get_close_reply_session_service()
+    ticket_clarifications = get_ticket_clarification_service()
+    user_reply_sessions = get_user_reply_session_service()
+    observability = get_observability_service()
+    max_messages = MaxMessageService(observability=observability)
+    ticket_card_updates = TicketCardUpdateService(
+        ticket_links=ticket_links,
+        group_chat_id=cfg.bot.group_chat_id,
+        max_messages=max_messages,
+        clarifications=ticket_clarifications,
+        observability=observability,
+    )
     network_session = get_network_session_service()
     access_registry = get_user_access_registry()
 
@@ -440,6 +476,24 @@ def register(dp) -> None:
             role_token, role_label = role_map[action]
             approve_status = access_registry.approve(target_user_id, role=role_token)
             if approve_status == "approved":
+                await observability.audit(
+                    action="access_approved",
+                    resource_type="user",
+                    resource_id=str(target_user_id),
+                    result="success",
+                    actor_user_id=user_id,
+                    actor_role="admin",
+                    metadata={"role": role_label},
+                )
+                await observability.audit(
+                    action="role_granted",
+                    resource_type="role",
+                    resource_id=str(target_user_id),
+                    result="success",
+                    actor_user_id=user_id,
+                    actor_role="admin",
+                    metadata={"role": role_label},
+                )
                 await _safe_answer(event, f"Одобрено: {target_user_id}")
                 await _replace_callback_message(
                     event,
@@ -457,7 +511,7 @@ def register(dp) -> None:
                         text=(
                             "Ваша заявка одобрена.\n"
                             f"Назначена роль: {role_label}\n"
-                            "Используйте /start или /menu."
+                            "Главное меню доступно ниже."
                         ),
                         attachments=[_build_menu_for_user(target_user_id, cfg, access_registry)],
                     )
@@ -465,9 +519,28 @@ def register(dp) -> None:
                     pass
                 return
             if approve_status == "already_approved":
+                await observability.audit(
+                    action="access_approved",
+                    resource_type="user",
+                    resource_id=str(target_user_id),
+                    result="denied",
+                    actor_user_id=user_id,
+                    actor_role="admin",
+                    reason="already_approved",
+                )
                 await _safe_answer(event, "Пользователь уже одобрен")
                 return
             if approve_status == "invalid_role":
+                await observability.audit(
+                    action="role_granted",
+                    resource_type="role",
+                    resource_id=str(target_user_id),
+                    result="failed",
+                    actor_user_id=user_id,
+                    actor_role="admin",
+                    reason="invalid_role",
+                    metadata={"role": role_token},
+                )
                 await _safe_answer(event, "Некорректная роль")
                 return
             await _safe_answer(event, "Заявка не найдена")
@@ -485,6 +558,14 @@ def register(dp) -> None:
 
             reject_status = access_registry.reject(target_user_id)
             if reject_status == "rejected":
+                await observability.audit(
+                    action="access_rejected",
+                    resource_type="user",
+                    resource_id=str(target_user_id),
+                    result="success",
+                    actor_user_id=user_id,
+                    actor_role="admin",
+                )
                 await _safe_answer(event, f"Отклонено: {target_user_id}")
                 await _replace_callback_message(
                     event,
@@ -503,6 +584,15 @@ def register(dp) -> None:
                 except Exception:
                     pass
             else:
+                await observability.audit(
+                    action="access_rejected",
+                    resource_type="user",
+                    resource_id=str(target_user_id),
+                    result="failed",
+                    actor_user_id=user_id,
+                    actor_role="admin",
+                    reason=reject_status,
+                )
                 await _safe_answer(event, "Заявка не найдена")
             return
 
@@ -688,6 +778,7 @@ def register(dp) -> None:
             return
 
         if action == "create":
+            logger.info("Create ticket button pressed: user_id=%s action=create", user_id)
             user_flow.begin_create(user_id)
             await event.message.answer(
                 text=user_texts.CATEGORY_PROMPT,
@@ -714,6 +805,30 @@ def register(dp) -> None:
                 attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
             )
             await event.answer(notification="Показал обращения")
+            return
+
+        if action == "ticket_reply":
+            ticket_id = (payload.value or "").strip()
+            ticket = await tickets.get_ticket(ticket_id)
+            if ticket is None:
+                await event.answer(notification="Заявка не найдена")
+                return
+            if ticket.user_id != user_id:
+                await event.answer(notification="Ответ доступен только автору заявки")
+                return
+            user_reply_sessions.start(user_id=user_id, ticket_id=ticket.ticket_id)
+            await event.message.answer(
+                text=(
+                    f"Введите ответ по заявке {ticket.ticket_id} "
+                    "следующим сообщением."
+                )
+            )
+            await event.answer(notification="Ожидаю ответ")
+            logger.info(
+                "User reply session started: ticket_id=%s user_id=%s",
+                ticket.ticket_id,
+                user_id,
+            )
             return
 
         if action == "wifi":
@@ -878,14 +993,14 @@ def register(dp) -> None:
 
                 group_sent = None
                 ticket_text = specialist_texts.render_group_ticket(ticket)
-                action_keyboard = build_ticket_actions_keyboard(ticket.ticket_id)
+                action_keyboard = build_ticket_actions_keyboard(ticket)
                 media_attachments = list(draft.attachments or [])
                 try:
                     group_sent = await event._ensure_bot().send_message(
                         chat_id=cfg.bot.group_chat_id,
                         text=ticket_text,
                         attachments=[*media_attachments, action_keyboard],
-                        parse_mode=ParseMode.HTML,
+                        format=ParseMode.HTML,
                     )
                 except Exception:
                     logger.exception(
@@ -900,14 +1015,14 @@ def register(dp) -> None:
                                 chat_id=cfg.bot.group_chat_id,
                                 text=ticket_text,
                                 attachments=media_attachments,
-                                parse_mode=ParseMode.HTML,
+                                format=ParseMode.HTML,
                             )
                         else:
                             group_sent = await event._ensure_bot().send_message(
                                 chat_id=cfg.bot.group_chat_id,
                                 text=ticket_text,
                                 attachments=[action_keyboard],
-                                parse_mode=ParseMode.HTML,
+                                format=ParseMode.HTML,
                             )
                     except Exception:
                         logger.exception(
@@ -920,7 +1035,7 @@ def register(dp) -> None:
                             group_sent = await event._ensure_bot().send_message(
                                 chat_id=cfg.bot.group_chat_id,
                                 text=ticket_text,
-                                parse_mode=ParseMode.HTML,
+                                format=ParseMode.HTML,
                             )
                         except Exception:
                             logger.exception(
@@ -962,16 +1077,28 @@ def register(dp) -> None:
                         group_message_id=group_sent.message.body.mid,
                         primary=True,
                     )
+                    ticket_clarifications.set_ticket_base_attachments(
+                        ticket_id=ticket.ticket_id,
+                        attachments=media_attachments,
+                    )
 
                 user_flow.reset(user_id)
-                user_sent = await event.message.answer(
+                confirmation_mid = await max_messages.send_message(
+                    bot=event._ensure_bot(),
+                    user_id=user_id,
                     text=user_texts.SUBMITTED_TEXT,
+                    text_format=None,
+                )
+                menu_sent = await event.message.answer(
+                    text=user_texts.WELCOME_TEXT,
                     attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
                 )
-                if user_sent and getattr(user_sent, "message", None) and user_sent.message.body:
+                menu_mid = _extract_message_id(menu_sent)
+                user_message_id = confirmation_mid or menu_mid
+                if user_message_id:
                     ticket_links.bind_user_message(
                         ticket_id=ticket.ticket_id,
-                        user_message_id=user_sent.message.body.mid,
+                        user_message_id=user_message_id,
                     )
                 return
             except Exception:
@@ -984,6 +1111,102 @@ def register(dp) -> None:
                 return
 
         await event.answer(notification="Неизвестное действие")
+
+    @dp.message_callback(ClarificationCancelPayload.filter())
+    async def handle_clarification_cancel(
+        event: MessageCallback,
+        payload: ClarificationCancelPayload,
+    ):
+        """Отменяет ожидающий ввод уточнения по inline-кнопке."""
+
+        actor_id = int(event.callback.user.user_id)
+        session = clarification_sessions.get_by_ticket(payload.ticket_id)
+        if session is None:
+            await max_messages.answer_callback(
+                event=event,
+                notification="Уточнение уже отменено",
+            )
+            return
+        if session.actor_user_id != actor_id:
+            await max_messages.answer_callback(
+                event=event,
+                notification="Это уточнение начал другой специалист",
+            )
+            return
+
+        clarification_sessions.reset(actor_id)
+        await max_messages.answer_callback(
+            event=event,
+            notification="Запрос уточнения отменён",
+        )
+        deleted = await max_messages.delete_message(
+            bot=event._ensure_bot(),
+            message_id=session.prompt_message_id,
+        )
+        if deleted:
+            logger.info(
+                "Clarification canceled and prompt deleted: ticket_id=%s "
+                "specialist_user_id=%s prompt_message_id=%s",
+                session.ticket_id,
+                actor_id,
+                session.prompt_message_id,
+            )
+        else:
+            logger.warning(
+                "Clarification canceled but prompt delete failed: ticket_id=%s "
+                "specialist_user_id=%s prompt_message_id=%s",
+                session.ticket_id,
+                actor_id,
+                session.prompt_message_id,
+            )
+
+    @dp.message_callback(CloseReplyCancelPayload.filter())
+    async def handle_close_reply_cancel(
+        event: MessageCallback,
+        payload: CloseReplyCancelPayload,
+    ):
+        """Отменяет ожидающий ввод ответа при закрытии."""
+
+        actor_id = int(event.callback.user.user_id)
+        session = close_reply_sessions.get_by_ticket(payload.ticket_id)
+        if session is None:
+            await max_messages.answer_callback(
+                event=event,
+                notification="Закрытие с ответом уже отменено",
+            )
+            return
+        if session.actor_user_id != actor_id:
+            await max_messages.answer_callback(
+                event=event,
+                notification="Это закрытие с ответом начал другой специалист",
+            )
+            return
+
+        close_reply_sessions.cancel(actor_id)
+        await observability.ticket_event(
+            ticket_id=session.ticket_id,
+            event_type="ticket_close_reply_cancelled",
+            actor_user_id=actor_id,
+            actor_name=session.actor_name,
+            actor_role="IT specialist",
+            source="callback",
+        )
+        await max_messages.answer_callback(
+            event=event,
+            notification="Закрытие с ответом отменено",
+        )
+        deleted = await max_messages.delete_message(
+            bot=event._ensure_bot(),
+            message_id=session.prompt_message_id,
+        )
+        if not deleted:
+            logger.warning(
+                "Close-with-reply prompt delete failed after cancel: ticket_id=%s "
+                "specialist_user_id=%s prompt_message_id=%s",
+                session.ticket_id,
+                actor_id,
+                session.prompt_message_id,
+            )
 
     @dp.message_callback(SpecialistTicketPayload.filter())
     async def handle_specialist_ticket_callback(
@@ -1009,7 +1232,7 @@ def register(dp) -> None:
             await event.message.answer(
                 text=_build_open_tickets_text(open_tickets),
                 attachments=attachments,
-                parse_mode=ParseMode.HTML,
+                format=ParseMode.HTML,
             )
             await event.answer(notification="Список открытых заявок")
             return
@@ -1030,18 +1253,119 @@ def register(dp) -> None:
             await event.answer(notification=f"Открыта {ticket.ticket_id}")
             return
 
+        if action == "attach_reply":
+            if not can_view_service_functions(
+                user_id=actor_id,
+                admin_ids=admin_ids,
+                specialist_ids=specialist_ids,
+            ):
+                await max_messages.answer_callback(
+                    event=event,
+                    notification=specialist_texts.FORBIDDEN_TEXT,
+                )
+                return
+
+            ticket = await tickets.get_ticket(ticket_id)
+            if ticket is None:
+                await max_messages.answer_callback(
+                    event=event,
+                    notification=specialist_texts.NOT_FOUND_TEXT,
+                )
+                return
+
+            body = getattr(event.message, "body", None)
+            group_message_id = getattr(body, "mid", None)
+            attached_reply = None
+            if group_message_id:
+                attached_reply = ticket_clarifications.attach_user_reply(str(group_message_id))
+            if attached_reply is None or attached_reply.ticket_id != ticket.ticket_id:
+                await max_messages.answer_callback(
+                    event=event,
+                    notification="Ответ не найден для прикрепления",
+                )
+                return
+
+            ticket_for_card = ticket
+            if ticket.status == TicketStatus.WAITING_USER:
+                status_result = await tickets.set_ticket_status(
+                    ticket_id=ticket.ticket_id,
+                    status=TicketStatus.IN_PROGRESS.value,
+                )
+                if status_result.ok and status_result.ticket is not None:
+                    ticket_for_card = status_result.ticket
+                else:
+                    logger.warning(
+                        "Failed to move ticket back to in_progress after user reply: "
+                        "ticket_id=%s reason=%s",
+                        ticket.ticket_id,
+                        status_result.reason,
+                    )
+
+            card_updated = await ticket_card_updates.update_group_ticket_card(
+                bot=event._ensure_bot(),
+                ticket=ticket_for_card,
+                notify=False,
+            )
+            await observability.ticket_event(
+                ticket_id=ticket.ticket_id,
+                event_type="user_reply_attached_to_card",
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+                actor_role="IT specialist",
+                source="callback",
+                related_message_id=str(group_message_id) if group_message_id else None,
+                metadata={"card_updated": card_updated},
+            )
+            await max_messages.answer_callback(
+                event=event,
+                notification=(
+                    "Ответ прикреплён к карточке"
+                    if card_updated
+                    else "Ответ сохранён, карточку не удалось обновить"
+                ),
+            )
+            deleted = await max_messages.delete_message(
+                bot=event._ensure_bot(),
+                message_id=str(group_message_id) if group_message_id else None,
+            )
+            logger.info(
+                "User reply attached to card: ticket_id=%s actor_id=%s "
+                "group_message_id=%s card_updated=%s message_deleted=%s",
+                ticket.ticket_id,
+                actor_id,
+                group_message_id,
+                card_updated,
+                deleted,
+            )
+            return
+
         if action == "take" and not can_take_ticket(
             user_id=actor_id,
             admin_ids=admin_ids,
             specialist_ids=specialist_ids,
         ):
-            await event.answer(notification=specialist_texts.FORBIDDEN_TEXT)
+            await observability.audit(
+                action="access_denied",
+                resource_type="ticket",
+                resource_id=ticket_id,
+                result="denied",
+                actor_user_id=actor_id,
+                actor_role="unknown",
+                reason="cannot_take_ticket",
+            )
+            await max_messages.answer_callback(
+                event=event,
+                notification=specialist_texts.FORBIDDEN_TEXT,
+            )
             return
 
-        if action in {"release", "close", "clarify"}:
+        if action in {"release", "close", "clarify", "close_with_reply"}:
             ticket = await tickets.get_ticket(ticket_id)
             if ticket is None:
-                await event.answer(notification=specialist_texts.NOT_FOUND_TEXT)
+                await max_messages.answer_callback(
+                    event=event,
+                    notification=specialist_texts.NOT_FOUND_TEXT,
+                )
                 return
             if not can_change_ticket_status(
                 actor_user_id=actor_id,
@@ -1049,7 +1373,121 @@ def register(dp) -> None:
                 admin_ids=admin_ids,
                 specialist_ids=specialist_ids,
             ):
-                await event.answer(notification=specialist_texts.FORBIDDEN_TEXT)
+                await observability.audit(
+                    action="access_denied",
+                    resource_type="ticket",
+                    resource_id=ticket_id,
+                    result="denied",
+                    actor_user_id=actor_id,
+                    actor_role="unknown",
+                    reason=f"cannot_{action}_ticket",
+                )
+                await max_messages.answer_callback(
+                    event=event,
+                    notification=specialist_texts.FORBIDDEN_TEXT,
+                )
+                return
+
+            if action == "clarify":
+                existing_session = clarification_sessions.get_by_ticket(ticket.ticket_id)
+                if existing_session and existing_session.actor_user_id != actor_id:
+                    await max_messages.answer_callback(
+                        event=event,
+                        notification="Уточнение уже начал другой специалист",
+                    )
+                    return
+
+                previous_session = clarification_sessions.get(actor_id)
+                if previous_session and previous_session.prompt_message_id:
+                    await max_messages.delete_message(
+                        bot=event._ensure_bot(),
+                        message_id=previous_session.prompt_message_id,
+                    )
+
+                session = clarification_sessions.start(
+                    actor_user_id=actor_id,
+                    actor_name=actor_name,
+                    ticket_id=ticket.ticket_id,
+                    group_chat_id=cfg.bot.group_chat_id,
+                )
+                await max_messages.answer_callback(
+                    event=event,
+                    notification=(
+                        "Введите вопрос для пользователя следующим сообщением"
+                    ),
+                )
+                prompt_sent = await event.message.answer(
+                    "Введите вопрос для пользователя по заявке "
+                    f"{ticket.ticket_id} следующим сообщением "
+                    "в этом чате.",
+                    attachments=[
+                        build_clarification_cancel_keyboard(ticket.ticket_id)
+                    ],
+                )
+                prompt_message_id = _extract_message_id(prompt_sent)
+                clarification_sessions.set_prompt_message_id(actor_id, prompt_message_id)
+                logger.info(
+                    "Clarification session started: ticket_id=%s specialist_user_id=%s "
+                    "prompt_message_id=%s session_id=%s",
+                    ticket.ticket_id,
+                    actor_id,
+                    prompt_message_id,
+                    session.session_id,
+                )
+                return
+
+            if action == "close_with_reply":
+                if ticket.status == TicketStatus.CLOSED:
+                    await max_messages.answer_callback(
+                        event=event,
+                        notification=specialist_texts.ALREADY_CLOSED_TEXT,
+                    )
+                    return
+                existing_session = close_reply_sessions.get_by_ticket(ticket.ticket_id)
+                if existing_session and existing_session.actor_user_id != actor_id:
+                    await max_messages.answer_callback(
+                        event=event,
+                        notification="Закрытие с ответом уже начал другой специалист",
+                    )
+                    return
+                previous_session = close_reply_sessions.get(actor_id)
+                if previous_session and previous_session.prompt_message_id:
+                    await max_messages.delete_message(
+                        bot=event._ensure_bot(),
+                        message_id=previous_session.prompt_message_id,
+                    )
+                session = close_reply_sessions.start(
+                    actor_user_id=actor_id,
+                    actor_name=actor_name,
+                    ticket_id=ticket.ticket_id,
+                    group_chat_id=cfg.bot.group_chat_id,
+                )
+                await max_messages.answer_callback(
+                    event=event,
+                    notification="Введите сообщение пользователю следующим сообщением",
+                )
+                prompt_sent = await event.message.answer(
+                    "Введите сообщение пользователю о выполненной работе.",
+                    attachments=[build_close_reply_cancel_keyboard(ticket.ticket_id)],
+                )
+                prompt_message_id = _extract_message_id(prompt_sent)
+                close_reply_sessions.set_prompt_message_id(actor_id, prompt_message_id)
+                await observability.ticket_event(
+                    ticket_id=ticket.ticket_id,
+                    event_type="ticket_close_reply_started",
+                    actor_user_id=actor_id,
+                    actor_name=actor_name,
+                    actor_role="IT specialist",
+                    source="callback",
+                )
+                logger.info(
+                    "Close-with-reply session started: ticket_id=%s specialist_user_id=%s "
+                    "prompt_message_id=%s session_id=%s",
+                    ticket.ticket_id,
+                    actor_id,
+                    prompt_message_id,
+                    session.session_id,
+                )
                 return
 
         if action == "take":
@@ -1071,28 +1509,36 @@ def register(dp) -> None:
                 actor_name=actor_name,
                 admin_ids=admin_ids,
             )
-        elif action == "clarify":
-            result = await tickets.request_clarification(
-                ticket_id=ticket_id,
-                actor_user_id=actor_id,
-                actor_name=actor_name,
-                admin_ids=admin_ids,
-            )
         else:
-            await event.answer(notification="Неизвестное действие")
+            await max_messages.answer_callback(event=event, notification="Неизвестное действие")
             return
 
         if not result.ok or result.ticket is None:
             if result.reason == "already_assigned":
-                await event.answer(notification=specialist_texts.ALREADY_ASSIGNED_TEXT)
+                await max_messages.answer_callback(
+                    event=event,
+                    notification=specialist_texts.ALREADY_ASSIGNED_TEXT,
+                )
             elif result.reason == "forbidden":
-                await event.answer(notification=specialist_texts.FORBIDDEN_TEXT)
+                await max_messages.answer_callback(
+                    event=event,
+                    notification=specialist_texts.FORBIDDEN_TEXT,
+                )
             elif result.reason == "already_closed":
-                await event.answer(notification=specialist_texts.ALREADY_CLOSED_TEXT)
+                await max_messages.answer_callback(
+                    event=event,
+                    notification=specialist_texts.ALREADY_CLOSED_TEXT,
+                )
             elif result.reason == "not_assigned":
-                await event.answer(notification=specialist_texts.NOT_ASSIGNED_TEXT)
+                await max_messages.answer_callback(
+                    event=event,
+                    notification=specialist_texts.NOT_ASSIGNED_TEXT,
+                )
             else:
-                await event.answer(notification=specialist_texts.NOT_FOUND_TEXT)
+                await max_messages.answer_callback(
+                    event=event,
+                    notification=specialist_texts.NOT_FOUND_TEXT,
+                )
             return
 
         logger.info(
@@ -1102,11 +1548,17 @@ def register(dp) -> None:
             action,
             result.ticket.status.value,
         )
-        await event.message.edit(
-            text=specialist_texts.render_group_ticket(result.ticket),
-            attachments=[build_ticket_actions_keyboard(result.ticket.ticket_id)],
-            parse_mode=ParseMode.HTML,
+        action_notifications = {
+            "take": "Заявка назначена на вас",
+            "release": "Заявка освобождена",
+            "close": "Заявка закрыта",
+        }
+        notification = action_notifications.get(action, "Статус обновлён")
+        await ticket_card_updates.update_group_ticket_card_from_callback(
+            event=event,
+            ticket=result.ticket,
+            notification=notification,
+            notify=False,
         )
         if action == "close":
             await notify_user_ticket_closed(event._ensure_bot(), result.ticket)
-        await event.answer(notification="Статус обновлён")

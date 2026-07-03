@@ -27,6 +27,7 @@ class ConfigTests(unittest.TestCase):
             cfg = get_config()
 
         self.assertEqual(cfg.tickets.backend, "postgres")
+        self.assertEqual(cfg.tickets.schema_mode, "legacy")
         self.assertEqual(cfg.tickets.postgres_host, "127.0.0.1")
         self.assertEqual(cfg.tickets.postgres_port, 5432)
         self.assertEqual(cfg.tickets.postgres_db, "postgres")
@@ -47,6 +48,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.netarium.timeout_sec, 10)
         self.assertEqual(cfg.netarium.cache_ttl_sec, 120)
         self.assertFalse(cfg.netarium.is_configured)
+        self.assertTrue(cfg.observability.audit_enabled)
+        self.assertTrue(cfg.observability.ticket_events_enabled)
+        self.assertTrue(cfg.observability.network_tool_runs_enabled)
 
     def test_postgres_backend_requires_host(self) -> None:
         env = {
@@ -58,6 +62,44 @@ class ConfigTests(unittest.TestCase):
             "MAX_TICKET_PG_DB": "postgres",
             "MAX_TICKET_PG_USER": "postgres",
             "MAX_TICKET_PG_PASSWORD": "secret",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with self.assertRaises(RuntimeError):
+                get_config()
+
+    def test_ticket_schema_mode_accepts_normalized_for_postgres(self) -> None:
+        env = {
+            "MAX_BOT_TOKEN": "test-token",
+            "MAX_GROUP_CHAT_ID": "123",
+            "MAX_TICKET_BACKEND": "postgres",
+            "MAX_TICKET_SCHEMA_MODE": "normalized",
+            "MAX_TICKET_PG_HOST": "127.0.0.1",
+            "MAX_TICKET_PG_PORT": "5432",
+            "MAX_TICKET_PG_DB": "test_dev_max",
+            "MAX_TICKET_PG_USER": "postgres",
+            "MAX_TICKET_PG_PASSWORD": "secret",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            cfg = get_config()
+
+        self.assertEqual(cfg.tickets.schema_mode, "normalized")
+
+    def test_ticket_schema_mode_rejects_unknown_value(self) -> None:
+        env = {
+            "MAX_BOT_TOKEN": "test-token",
+            "MAX_GROUP_CHAT_ID": "123",
+            "MAX_TICKET_SCHEMA_MODE": "bad",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with self.assertRaises(RuntimeError):
+                get_config()
+
+    def test_ticket_schema_mode_requires_postgres_for_normalized(self) -> None:
+        env = {
+            "MAX_BOT_TOKEN": "test-token",
+            "MAX_GROUP_CHAT_ID": "123",
+            "MAX_TICKET_BACKEND": "sqlite",
+            "MAX_TICKET_SCHEMA_MODE": "normalized",
         }
         with patch.dict(os.environ, env, clear=False):
             with self.assertRaises(RuntimeError):

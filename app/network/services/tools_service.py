@@ -1,12 +1,14 @@
 """Сервис запуска сетевых диагностических инструментов."""
 
 import logging
+from datetime import datetime, timezone
 
 from app.network.adapters.local_diagnostics_adapter import LocalDiagnosticsAdapter
 from app.network.models.diagnostic import DiagnosticResult
 from app.network.policy.corporate_policy import CorporateTargetPolicy
 from app.network.policy.target_validator import normalize_target, validate_target_format
 from app.network.services.templates_service import NetworkTemplatesService
+from app.observability.services import ObservabilityService, truncate_for_observability
 from config.config import NetworkToolsFeaturesConfig
 
 
@@ -22,11 +24,13 @@ class NetworkToolsService:
         policy: CorporateTargetPolicy,
         features: NetworkToolsFeaturesConfig,
         templates: NetworkTemplatesService,
+        observability: ObservabilityService | None = None,
     ) -> None:
         self.adapter = adapter
         self.policy = policy
         self.features = features
         self.templates = templates
+        self.observability = observability
 
     def _validate_target(self, raw_target: str) -> tuple[bool, str, str]:
         """Нормализует target и проверяет его по корпоративной политике."""
@@ -124,20 +128,115 @@ class NetworkToolsService:
             details=self.templates.device_template(device_type),
         )
 
-    async def run_tool(self, tool: str, target: str) -> DiagnosticResult:
+    def _is_feature_enabled(self, tool: str) -> bool | None:
+        """Возвращает состояние feature flag для инструмента."""
+
+        mapping = {
+            "ping": self.features.ping,
+            "dns": self.features.dns_lookup,
+            "host_check": self.features.host_check,
+            "traceroute": self.features.traceroute,
+            "nslookup": self.features.nslookup,
+            "whois": self.features.whois,
+        }
+        return mapping.get(tool)
+
+    async def run_tool(
+        self,
+        tool: str,
+        target: str,
+        *,
+        actor_user_id: int | None = None,
+        actor_name: str | None = None,
+    ) -> DiagnosticResult:
         """Маршрутизирует текстовый код инструмента к конкретной диагностике."""
 
         logger.info("Network tool requested: tool=%s target=%s", tool, target)
+        started_at = datetime.now(tz=timezone.utc)
+        normalized_target = normalize_target(target)
+        feature_enabled = self._is_feature_enabled(tool)
         if tool == "ping":
-            return await self.ping(target)
-        if tool == "dns":
-            return await self.dns_lookup(target)
-        if tool == "host_check":
-            return await self.host_check(target)
-        if tool == "traceroute":
-            return await self.traceroute(target)
-        if tool == "nslookup":
-            return await self.nslookup(target)
-        if tool == "whois":
-            return await self.whois(target)
-        return DiagnosticResult(ok=False, title="Network", details="Неизвестный инструмент.")
+            result = await self.ping(target)
+        elif tool == "dns":
+            result = await self.dns_lookup(target)
+        elif tool == "host_check":
+            result = await self.host_check(target)
+        elif tool == "traceroute":
+            result = await self.traceroute(target)
+        elif tool == "nslookup":
+            result = await self.nslookup(target)
+        elif tool == "whois":
+            result = await self.whois(target)
+        else:
+            result = DiagnosticResult(ok=False, title="Network", details="Неизвестный инструмент.")
+        await self._record_tool_run(
+            tool=tool,
+            target=target,
+            normalized_target=normalized_target,
+            feature_enabled=feature_enabled,
+            result=result,
+            started_at=started_at,
+            actor_user_id=actor_user_id,
+            actor_name=actor_name,
+        )
+        return result
+
+    async def _record_tool_run(
+        self,
+        *,
+        tool: str,
+        target: str,
+        normalized_target: str,
+        feature_enabled: bool | None,
+        result: DiagnosticResult,
+        started_at: datetime,
+        actor_user_id: int | None,
+        actor_name: str | None,
+    ) -> None:
+        """Пишет observability-запись сетевого инструмента."""
+
+        if self.observability is None:
+            return
+        finished_at = datetime.now(tz=timezone.utc)
+        duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+        output_excerpt, truncated = truncate_for_observability(result.details, limit=500)
+        policy_decision = "allowed"
+        status = "success" if result.ok else "failed"
+        error_text = None
+        if not result.ok:
+            error_text = output_excerpt
+            lowered = result.details.lower()
+            if "запрещена политикой" in lowered:
+                status = "denied"
+                policy_decision = "denied"
+            elif "timed out" in lowered or "timeout" in lowered:
+                status = "timeout"
+        if feature_enabled is False:
+            policy_decision = "feature_disabled"
+        await self.observability.network_tool_run(
+            tool=tool,
+            target=target,
+            status=status,
+            actor_user_id=actor_user_id,
+            actor_name=actor_name,
+            normalized_target=normalized_target,
+            policy_decision=policy_decision,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+            output_excerpt=output_excerpt,
+            output_truncated=truncated,
+            error_text=error_text,
+            feature_enabled=feature_enabled,
+        )
+        if status == "denied":
+            await self.observability.audit(
+                action="network_tool_denied_by_policy",
+                resource_type="network_tool",
+                resource_id=tool,
+                result="denied",
+                actor_user_id=actor_user_id,
+                actor_role="IT specialist",
+                reason="policy_denied",
+                metadata={"target": normalized_target},
+            )

@@ -19,18 +19,37 @@ from app.admin.services.access_service import (
     is_admin,
 )
 from app.bot.notifications import notify_user_ticket_closed
+from app.bot.services.max_message_service import MaxMessageService
+from app.bot.services.media_forward_service import MediaForwardService
 from app.common.user_helpers import get_first_name, get_full_name
 from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_admin_request_keyboard,
+    build_attach_user_reply_keyboard,
+    build_clarification_cancel_keyboard,
+    build_clarification_reply_keyboard,
+    build_close_reply_cancel_keyboard,
     build_main_menu_keyboard,
     build_open_tickets_keyboard,
     build_registration_keyboard,
     build_ticket_actions_keyboard,
 )
+from app.helpdesk.models.ticket import TicketStatus
 from app.helpdesk.runtime import (
+    get_clarification_session_service,
+    get_close_reply_session_service,
+    get_ticket_clarification_service,
     get_ticket_link_service,
     get_ticket_service,
+    get_user_reply_session_service,
     get_user_flow_service,
+)
+from app.helpdesk.services.attachment_filter_service import (
+    collect_ticket_media_attachments,
+    is_audio_attachment,
+    summarize_attachment,
+)
+from app.helpdesk.services.ticket_clarification_service import (
+    MAX_CLARIFICATION_MESSAGE_LENGTH,
 )
 from app.helpdesk.services.ticket_service import (
     get_optional_contact_details,
@@ -40,6 +59,9 @@ from app.helpdesk.services.ticket_service import (
     normalize_ticket_text,
     parse_specialist_command,
 )
+from app.helpdesk.services.menu_service import get_ticket_categories
+from app.helpdesk.services.ticket_card_update_service import TicketCardUpdateService
+from app.helpdesk.services.user_flow_service import UserDraftSourceMessage
 from app.helpdesk.texts import specialist_texts, user_texts
 from app.network.keyboards.network_keyboards import (
     build_network_main_menu_keyboard,
@@ -54,25 +76,54 @@ from app.network.runtime import (
 from app.network.netarium.guest_texts import render_guest_search_result
 from app.network.texts import network_texts
 from app.network.wifi.voucher_texts import render_voucher_search_result
+from app.observability.runtime import get_observability_service
 from config.config import get_config
 
 logger = logging.getLogger(__name__)
 _PHONE_PATTERN = re.compile(r"TEL[^:]*:([+0-9\-()\s]+)")
-_TICKET_MEDIA_ATTACHMENT_MARKERS = (
-    "image",
-    "photo",
-    "video",
-    "file",
-    "document",
-    "audio",
-)
-_NON_FORWARDABLE_ATTACHMENT_MARKERS = (
-    "contact",
-    "inline_keyboard",
-    "reply_keyboard",
-    "button",
-    "sticker",
-)
+_ATTACHMENT_ONLY_PROBLEM_TEXT = "[вложение]"
+_AUDIO_ONLY_PROBLEM_TEXT = "[аудиосообщение]"
+
+
+def _draft_has_problem_content(draft) -> bool:
+    """Проверяет, есть ли в черновике текст или пользовательские вложения."""
+
+    return bool(
+        draft.problem_text
+        or draft.attachments
+        or draft.source_audio_messages
+    )
+
+
+def _resolve_draft_problem_text(draft) -> str:
+    """Возвращает текст заявки, включая безопасную заглушку для media-only."""
+
+    if draft.problem_text:
+        return draft.problem_text
+    if draft.source_audio_messages:
+        return _AUDIO_ONLY_PROBLEM_TEXT
+    return _ATTACHMENT_ONLY_PROBLEM_TEXT
+
+
+def _message_text_or_media_placeholder(
+    text: str,
+    audio_source_message: UserDraftSourceMessage | None,
+) -> str:
+    """Возвращает текст сообщения или понятную media-заглушку."""
+
+    if text:
+        return text
+    if audio_source_message:
+        return _AUDIO_ONLY_PROBLEM_TEXT
+    return _ATTACHMENT_ONLY_PROBLEM_TEXT
+
+
+def _extract_message_id(sent_message) -> str | None:
+    """Достаёт MAX message_id из ответа отправки сообщения."""
+
+    body = getattr(getattr(sent_message, "message", None), "body", None)
+    mid = getattr(body, "mid", None)
+    return str(mid) if mid else None
 
 
 def _resolve_replied_mid(event: MessageCreated) -> str | None:
@@ -174,18 +225,44 @@ def _extract_shared_phone(event: MessageCreated) -> str | None:
     return None
 
 
-def _extract_ticket_media_attachments(event: MessageCreated) -> list[Any]:
+def _extract_ticket_media_attachments(
+    event: MessageCreated,
+    *,
+    include_audio: bool = True,
+) -> list[Any]:
     """Отбирает вложения, которые можно переслать в заявку."""
 
-    collected: list[Any] = []
     attachments = list(getattr(event.message.body, "attachments", None) or [])
-    for attachment in attachments:
-        att_type = str(getattr(attachment, "type", "")).lower()
-        if any(marker in att_type for marker in _NON_FORWARDABLE_ATTACHMENT_MARKERS):
-            continue
-        if any(marker in att_type for marker in _TICKET_MEDIA_ATTACHMENT_MARKERS):
-            collected.append(attachment)
-    return collected
+    media_attachments = collect_ticket_media_attachments(
+        attachments,
+        include_audio=include_audio,
+    )
+    if attachments:
+        logger.info(
+            "Message attachments filtered: incoming=%s accepted=%s",
+            [summarize_attachment(attachment) for attachment in attachments],
+            [summarize_attachment(attachment) for attachment in media_attachments],
+        )
+    return media_attachments
+
+
+def _extract_ticket_audio_source_message(
+    event: MessageCreated,
+) -> UserDraftSourceMessage | None:
+    """Сохраняет исходное audio-сообщение для нативного forward в группу."""
+
+    attachments = list(getattr(event.message.body, "attachments", None) or [])
+    audio_attachments = [
+        attachment for attachment in attachments if is_audio_attachment(attachment)
+    ]
+    if not audio_attachments:
+        return None
+    source_mid = getattr(event.message.body, "mid", None)
+    return UserDraftSourceMessage(
+        message=event.message,
+        message_id=str(source_mid) if source_mid else None,
+        attachments=audio_attachments,
+    )
 
 
 def register(dp) -> None:
@@ -194,6 +271,20 @@ def register(dp) -> None:
     cfg = get_config()
     tickets = get_ticket_service()
     ticket_links = get_ticket_link_service()
+    clarification_sessions = get_clarification_session_service()
+    close_reply_sessions = get_close_reply_session_service()
+    ticket_clarifications = get_ticket_clarification_service()
+    user_reply_sessions = get_user_reply_session_service()
+    observability = get_observability_service()
+    max_messages = MaxMessageService(observability=observability)
+    media_forward = MediaForwardService()
+    ticket_card_updates = TicketCardUpdateService(
+        ticket_links=ticket_links,
+        group_chat_id=cfg.bot.group_chat_id,
+        max_messages=max_messages,
+        clarifications=ticket_clarifications,
+        observability=get_observability_service(),
+    )
     user_flow = get_user_flow_service()
     network_session = get_network_session_service()
     network_tools = get_network_tools_service()
@@ -241,20 +332,24 @@ def register(dp) -> None:
                     draft.step,
                 )
                 return
-            if not draft.category or not draft.problem_text:
+            if not draft.category or not _draft_has_problem_content(draft):
                 logger.info(
-                    "Auto-submit skipped by missing data: user_id=%s category=%s has_text=%s",
+                    "Auto-submit skipped by missing data: user_id=%s category=%s "
+                    "has_text=%s has_attachments=%s has_audio=%s",
                     user_id,
                     draft.category,
                     bool(draft.problem_text),
+                    bool(draft.attachments),
+                    bool(draft.source_audio_messages),
                 )
                 return
             requester_name, requester_phone = _get_registered_user_profile(user_id)
             logger.info(
-                "Auto-submit started: user_id=%s category=%s has_attachments=%s",
+                "Auto-submit started: user_id=%s category=%s has_attachments=%s has_audio=%s",
                 user_id,
                 draft.category,
                 bool(draft.attachments),
+                bool(draft.source_audio_messages),
             )
             await _submit_draft_ticket_by_bot(
                 bot=bot,
@@ -346,28 +441,28 @@ def register(dp) -> None:
 
         _cancel_problem_collect_task(sender_id)
         draft = user_flow.get(sender_id)
-        if not draft.category or not draft.problem_text:
+        if not draft.category or not _draft_has_problem_content(draft):
             return False
 
         ticket = await tickets.create_ticket(
             requester_user_id=sender_id,
             requester_name=requester_name,
             category=draft.category,
-            text=draft.problem_text,
+            text=_resolve_draft_problem_text(draft),
             requester_phone=requester_phone,
             requester_department=requester_department,
         )
 
         group_sent = None
         ticket_text = specialist_texts.render_group_ticket(ticket)
-        action_keyboard = build_ticket_actions_keyboard(ticket.ticket_id)
+        action_keyboard = build_ticket_actions_keyboard(ticket)
         media_attachments = list(draft.attachments or [])
         try:
             group_sent = await bot.send_message(
                 chat_id=cfg.bot.group_chat_id,
                 text=ticket_text,
                 attachments=[*media_attachments, action_keyboard],
-                parse_mode=ParseMode.HTML,
+                format=ParseMode.HTML,
             )
         except Exception:
             logger.exception(
@@ -382,14 +477,14 @@ def register(dp) -> None:
                         chat_id=cfg.bot.group_chat_id,
                         text=ticket_text,
                         attachments=media_attachments,
-                        parse_mode=ParseMode.HTML,
+                        format=ParseMode.HTML,
                     )
                 else:
                     group_sent = await bot.send_message(
                         chat_id=cfg.bot.group_chat_id,
                         text=ticket_text,
                         attachments=[action_keyboard],
-                        parse_mode=ParseMode.HTML,
+                        format=ParseMode.HTML,
                     )
             except Exception:
                 logger.exception(
@@ -402,7 +497,7 @@ def register(dp) -> None:
                     group_sent = await bot.send_message(
                         chat_id=cfg.bot.group_chat_id,
                         text=ticket_text,
-                        parse_mode=ParseMode.HTML,
+                        format=ParseMode.HTML,
                     )
                 except Exception:
                     logger.exception(
@@ -441,28 +536,75 @@ def register(dp) -> None:
             return False
 
         if group_sent.message and group_sent.message.body:
+            group_message_id = str(group_sent.message.body.mid)
             ticket_links.bind_group_message(
                 ticket_id=ticket.ticket_id,
-                group_message_id=group_sent.message.body.mid,
+                group_message_id=group_message_id,
                 primary=True,
+            )
+            await observability.ticket_event(
+                ticket_id=ticket.ticket_id,
+                event_type="message_relayed_to_group",
+                actor_user_id=sender_id,
+                actor_name=requester_name,
+                actor_role="user",
+                source="user_message",
+                related_message_id=group_message_id,
+                metadata={"message_kind": "ticket_card"},
+            )
+            if media_attachments:
+                await observability.ticket_event(
+                    ticket_id=ticket.ticket_id,
+                    event_type="attachment_received",
+                    actor_user_id=sender_id,
+                    actor_name=requester_name,
+                    actor_role="user",
+                    source="user_message",
+                    related_message_id=group_message_id,
+                    metadata={"count": len(media_attachments)},
+                )
+            forwarded_audio_mids = await media_forward.forward_audio_messages(
+                bot=bot,
+                source_messages=list(draft.source_audio_messages or []),
+                ticket_id=ticket.ticket_id,
+                user_id=sender_id,
+                target_chat_id=cfg.bot.group_chat_id,
+            )
+            for forwarded_mid in forwarded_audio_mids:
+                ticket_links.bind_group_message(
+                    ticket_id=ticket.ticket_id,
+                    group_message_id=forwarded_mid,
+                    primary=False,
+                )
+            ticket_clarifications.set_ticket_base_attachments(
+                ticket_id=ticket.ticket_id,
+                attachments=media_attachments,
             )
 
         user_flow.reset(sender_id)
-        user_sent = await bot.send_message(
+        confirmation_mid = await max_messages.send_message(
+            bot=bot,
             user_id=sender_id,
             text=user_texts.SUBMITTED_TEXT,
+            text_format=None,
+        )
+        menu_sent = await bot.send_message(
+            user_id=sender_id,
+            text=user_texts.WELCOME_TEXT,
             attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
         )
-        if user_sent and getattr(user_sent, "message", None) and user_sent.message.body:
+        menu_mid = _extract_message_id(menu_sent)
+        user_message_id = confirmation_mid or menu_mid
+        if user_message_id:
             ticket_links.bind_user_message(
                 ticket_id=ticket.ticket_id,
-                user_message_id=user_sent.message.body.mid,
+                user_message_id=user_message_id,
             )
         return True
 
     async def _submit_draft_ticket(event: MessageCreated, sender_id: int) -> None:
         draft = user_flow.get(sender_id)
-        if not draft.category or not draft.problem_text:
+        if not draft.category or not _draft_has_problem_content(draft):
             await event.message.answer(
                 text="Не хватает данных для отправки. Создайте обращение заново.",
                 attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
@@ -487,6 +629,7 @@ def register(dp) -> None:
         actor_name: str,
         text: str,
         attachments: list[Any],
+        audio_source_message: UserDraftSourceMessage | None = None,
     ) -> bool:
         reply_mid = _resolve_replied_mid(event)
         if not reply_mid:
@@ -501,13 +644,13 @@ def register(dp) -> None:
             await event.message.answer(specialist_texts.NOT_FOUND_TEXT)
             return True
 
-        if not text and not attachments:
+        if not text and not attachments and not audio_source_message:
             return True
 
         relay_text = (
             f"Ответ по заявке {ticket.ticket_id}\n"
             f"Специалист: {actor_name}\n"
-            f"Сообщение:\n{text or '[вложение]'}"
+            f"Сообщение:\n{_message_text_or_media_placeholder(text, audio_source_message)}"
         )
         try:
             if attachments:
@@ -535,6 +678,19 @@ def register(dp) -> None:
                 ticket_id=ticket.ticket_id,
                 user_message_id=user_sent.message.body.mid,
             )
+        if audio_source_message:
+            forwarded_audio_mids = await media_forward.forward_audio_messages(
+                bot=event._ensure_bot(),
+                source_messages=[audio_source_message],
+                ticket_id=ticket.ticket_id,
+                user_id=actor_id,
+                target_user_id=ticket.user_id,
+            )
+            for forwarded_mid in forwarded_audio_mids:
+                ticket_links.bind_user_message(
+                    ticket_id=ticket.ticket_id,
+                    user_message_id=forwarded_mid,
+                )
 
         group_mid = getattr(getattr(event.message, "body", None), "mid", None)
         if group_mid:
@@ -548,6 +704,456 @@ def register(dp) -> None:
         )
         return True
 
+    async def _cleanup_clarification_messages(
+        *,
+        bot,
+        ticket_id: str,
+        specialist_user_id: int,
+        prompt_message_id: str | None,
+        specialist_message_id: str | None,
+    ) -> None:
+        """Удаляет временные сообщения сценария уточнения."""
+
+        prompt_deleted = await max_messages.delete_message(
+            bot=bot,
+            message_id=prompt_message_id,
+        )
+        specialist_deleted = await max_messages.delete_message(
+            bot=bot,
+            message_id=specialist_message_id,
+        )
+        if prompt_deleted:
+            logger.info(
+                "Clarification prompt message deleted: ticket_id=%s specialist_user_id=%s "
+                "prompt_message_id=%s",
+                ticket_id,
+                specialist_user_id,
+                prompt_message_id,
+            )
+        else:
+            logger.warning(
+                "Failed to delete clarification prompt message: ticket_id=%s "
+                "specialist_user_id=%s prompt_message_id=%s",
+                ticket_id,
+                specialist_user_id,
+                prompt_message_id,
+            )
+        if specialist_deleted:
+            logger.info(
+                "Clarification specialist message deleted: ticket_id=%s "
+                "specialist_user_id=%s specialist_message_id=%s",
+                ticket_id,
+                specialist_user_id,
+                specialist_message_id,
+            )
+        else:
+            logger.warning(
+                "Failed to delete clarification specialist message: ticket_id=%s "
+                "specialist_user_id=%s specialist_message_id=%s",
+                ticket_id,
+                specialist_user_id,
+                specialist_message_id,
+            )
+
+    async def _cleanup_close_reply_messages(
+        *,
+        bot,
+        ticket_id: str,
+        specialist_user_id: int,
+        prompt_message_id: str | None,
+        specialist_message_id: str | None,
+    ) -> None:
+        """Удаляет временные сообщения сценария закрытия с ответом."""
+
+        prompt_deleted = await max_messages.delete_message(
+            bot=bot,
+            message_id=prompt_message_id,
+        )
+        specialist_deleted = await max_messages.delete_message(
+            bot=bot,
+            message_id=specialist_message_id,
+        )
+        if not prompt_deleted:
+            logger.warning(
+                "Failed to delete close-reply prompt: ticket_id=%s "
+                "specialist_user_id=%s prompt_message_id=%s",
+                ticket_id,
+                specialist_user_id,
+                prompt_message_id,
+            )
+        if not specialist_deleted:
+            logger.warning(
+                "Failed to delete close-reply specialist message: ticket_id=%s "
+                "specialist_user_id=%s specialist_message_id=%s",
+                ticket_id,
+                specialist_user_id,
+                specialist_message_id,
+            )
+
+    async def _send_close_reply_to_user(
+        event: MessageCreated,
+        *,
+        actor_id: int,
+        actor_name: str,
+        text: str,
+        attachments: list[Any],
+    ) -> bool:
+        """Обрабатывает текст специалиста для закрытия заявки с ответом."""
+
+        session = close_reply_sessions.get(actor_id)
+        if session is None:
+            return False
+
+        bot = event._ensure_bot()
+        specialist_message_id = getattr(getattr(event.message, "body", None), "mid", None)
+        specialist_message_id = str(specialist_message_id) if specialist_message_id else None
+
+        if text == "/cancel":
+            close_reply_sessions.cancel(actor_id)
+            await observability.ticket_event(
+                ticket_id=session.ticket_id,
+                event_type="ticket_close_reply_cancelled",
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+                actor_role="IT specialist",
+                source="group_command",
+            )
+            await _cleanup_close_reply_messages(
+                bot=bot,
+                ticket_id=session.ticket_id,
+                specialist_user_id=actor_id,
+                prompt_message_id=session.prompt_message_id,
+                specialist_message_id=specialist_message_id,
+            )
+            return True
+
+        if is_command_text(text):
+            return False
+
+        if not text:
+            await event.message.answer(
+                "Для закрытия с ответом отправьте текстовое сообщение."
+            )
+            return True
+
+        if attachments:
+            await event.message.answer(
+                "Для закрытия с ответом отправьте текстовое сообщение без вложений."
+            )
+            return True
+
+        ticket = await tickets.get_ticket(session.ticket_id)
+        if ticket is None:
+            close_reply_sessions.reset(actor_id)
+            await event.message.answer(specialist_texts.NOT_FOUND_TEXT)
+            return True
+
+        admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
+        if not can_change_ticket_status(
+            actor_user_id=actor_id,
+            ticket=ticket,
+            admin_ids=admin_ids,
+            specialist_ids=specialist_ids,
+        ):
+            close_reply_sessions.reset(actor_id)
+            await event.message.answer(specialist_texts.FORBIDDEN_TEXT)
+            return True
+
+        if ticket.status == TicketStatus.CLOSED:
+            close_reply_sessions.reset(actor_id)
+            await event.message.answer(specialist_texts.ALREADY_CLOSED_TEXT)
+            return True
+
+        user_message_text = user_texts.render_ticket_closed_with_reply_notification(
+            ticket,
+            text,
+        )
+        user_sent_mid = await max_messages.send_message(
+            bot=bot,
+            user_id=ticket.user_id,
+            text=user_message_text,
+            text_format=None,
+        )
+        if not user_sent_mid:
+            logger.warning(
+                "Close-with-reply delivery failed, ticket not closed: "
+                "ticket_id=%s actor_id=%s user_id=%s",
+                ticket.ticket_id,
+                actor_id,
+                ticket.user_id,
+            )
+            await event.message.answer(
+                "Не удалось отправить сообщение пользователю. Заявка не закрыта."
+            )
+            return True
+
+        ticket_links.bind_user_message(
+            ticket_id=ticket.ticket_id,
+            user_message_id=user_sent_mid,
+        )
+        actor_role = "admin" if is_admin(actor_id, admin_ids) else "IT specialist"
+        ticket_clarifications.save_closing_reply(
+            ticket_id=ticket.ticket_id,
+            actor_user_id=actor_id,
+            actor_name=actor_name,
+            text=text,
+            source_message_id=specialist_message_id,
+            target_message_id=user_sent_mid,
+            actor_role=actor_role,
+        )
+        await observability.ticket_event(
+            ticket_id=ticket.ticket_id,
+            event_type="ticket_close_reply_sent_to_user",
+            actor_user_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            source="user_message",
+            related_message_id=user_sent_mid,
+        )
+        await observability.ticket_event(
+            ticket_id=ticket.ticket_id,
+            event_type="message_relayed_to_user",
+            actor_user_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            source="user_message",
+            related_message_id=user_sent_mid,
+            metadata={"message_kind": "closing_reply"},
+        )
+
+        result = await tickets.close_ticket(
+            ticket_id=ticket.ticket_id,
+            actor_user_id=actor_id,
+            actor_name=actor_name,
+            admin_ids=admin_ids,
+        )
+        if not result.ok or result.ticket is None:
+            close_reply_sessions.finish(actor_id)
+            await event.message.answer(
+                "Ответ пользователю отправлен, но заявку не удалось закрыть."
+            )
+            logger.warning(
+                "Close-with-reply close failed after delivery: ticket_id=%s reason=%s",
+                ticket.ticket_id,
+                result.reason,
+            )
+            return True
+
+        close_reply_sessions.finish(actor_id)
+        await ticket_card_updates.update_group_ticket_card(
+            bot=bot,
+            ticket=result.ticket,
+            notify=False,
+        )
+        await _cleanup_close_reply_messages(
+            bot=bot,
+            ticket_id=result.ticket.ticket_id,
+            specialist_user_id=actor_id,
+            prompt_message_id=session.prompt_message_id,
+            specialist_message_id=specialist_message_id,
+        )
+        logger.info(
+            "Ticket closed with reply: ticket_id=%s actor_id=%s user_message_id=%s",
+            result.ticket.ticket_id,
+            actor_id,
+            user_sent_mid,
+        )
+        return True
+
+    async def _send_clarification_question_to_user(
+        event: MessageCreated,
+        *,
+        actor_id: int,
+        actor_name: str,
+        text: str,
+        attachments: list[Any],
+        audio_source_message: UserDraftSourceMessage | None = None,
+    ) -> bool:
+        """Отправляет введённый специалистом вопрос автору заявки."""
+
+        session = clarification_sessions.get(actor_id)
+        if session is None:
+            return False
+
+        bot = event._ensure_bot()
+        specialist_message_id = getattr(getattr(event.message, "body", None), "mid", None)
+        specialist_message_id = str(specialist_message_id) if specialist_message_id else None
+
+        if text == "/cancel":
+            clarification_sessions.reset(actor_id)
+            await _cleanup_clarification_messages(
+                bot=bot,
+                ticket_id=session.ticket_id,
+                specialist_user_id=actor_id,
+                prompt_message_id=session.prompt_message_id,
+                specialist_message_id=specialist_message_id,
+            )
+            logger.info(
+                "Clarification canceled by legacy command: ticket_id=%s "
+                "specialist_user_id=%s prompt_message_id=%s specialist_message_id=%s",
+                session.ticket_id,
+                actor_id,
+                session.prompt_message_id,
+                specialist_message_id,
+            )
+            return True
+
+        if is_command_text(text):
+            return False
+
+        if not text and not attachments and not audio_source_message:
+            await event.message.answer(
+                "Введите текст вопроса для пользователя."
+            )
+            return True
+
+        if text and len(text) > MAX_CLARIFICATION_MESSAGE_LENGTH:
+            await event.message.answer(
+                "Текст уточнения слишком длинный. Сократите его до "
+                f"{MAX_CLARIFICATION_MESSAGE_LENGTH} символов."
+            )
+            return True
+
+        ticket = await tickets.get_ticket(session.ticket_id)
+        if ticket is None:
+            clarification_sessions.reset(actor_id)
+            await event.message.answer(specialist_texts.NOT_FOUND_TEXT)
+            return True
+
+        admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
+        if not can_change_ticket_status(
+            actor_user_id=actor_id,
+            ticket=ticket,
+            admin_ids=admin_ids,
+            specialist_ids=specialist_ids,
+        ):
+            clarification_sessions.reset(actor_id)
+            await event.message.answer(specialist_texts.FORBIDDEN_TEXT)
+            return True
+
+        question_text = (
+            f"Уточнение по заявке {ticket.ticket_id}\n"
+            f"Специалист: {actor_name}\n"
+            f"Вопрос:\n{_message_text_or_media_placeholder(text, audio_source_message)}"
+        )
+        user_attachments = [
+            *attachments,
+            build_clarification_reply_keyboard(ticket.ticket_id),
+        ]
+        try:
+            user_sent = await bot.send_message(
+                user_id=ticket.user_id,
+                text=question_text,
+                attachments=user_attachments,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to send clarification question: ticket_id=%s actor_id=%s",
+                ticket.ticket_id,
+                actor_id,
+            )
+            await event.message.answer("Не удалось доставить вопрос пользователю.")
+            return True
+
+        result = await tickets.request_clarification(
+            ticket_id=ticket.ticket_id,
+            actor_user_id=actor_id,
+            actor_name=actor_name,
+            admin_ids=admin_ids,
+        )
+        if not result.ok or result.ticket is None:
+            clarification_sessions.reset(actor_id)
+            await event.message.answer(specialist_texts.NOT_FOUND_TEXT)
+            return True
+
+        if user_sent and getattr(user_sent, "message", None) and user_sent.message.body:
+            user_sent_mid = str(user_sent.message.body.mid)
+            ticket_links.bind_user_message(
+                ticket_id=result.ticket.ticket_id,
+                user_message_id=user_sent_mid,
+            )
+        else:
+            user_sent_mid = None
+        if audio_source_message:
+            forwarded_audio_mids = await media_forward.forward_audio_messages(
+                bot=bot,
+                source_messages=[audio_source_message],
+                ticket_id=result.ticket.ticket_id,
+                user_id=actor_id,
+                target_user_id=result.ticket.user_id,
+            )
+            for forwarded_mid in forwarded_audio_mids:
+                ticket_links.bind_user_message(
+                    ticket_id=result.ticket.ticket_id,
+                    user_message_id=forwarded_mid,
+                )
+
+        ticket_clarifications.save_last(
+            ticket_id=result.ticket.ticket_id,
+            actor_user_id=actor_id,
+            actor_name=actor_name,
+            text=_message_text_or_media_placeholder(text, audio_source_message),
+            attachments=attachments,
+            source_message_id=specialist_message_id,
+            target_message_id=user_sent_mid,
+        )
+        await observability.ticket_event(
+            ticket_id=result.ticket.ticket_id,
+            event_type="clarification_sent_to_user",
+            actor_user_id=actor_id,
+            actor_name=actor_name,
+            actor_role="IT specialist",
+            source="user_message",
+            related_message_id=user_sent_mid,
+            metadata={"has_attachments": bool(attachments or audio_source_message)},
+        )
+        await observability.ticket_event(
+            ticket_id=result.ticket.ticket_id,
+            event_type="message_relayed_to_user",
+            actor_user_id=actor_id,
+            actor_name=actor_name,
+            actor_role="IT specialist",
+            source="user_message",
+            related_message_id=user_sent_mid,
+            metadata={"message_kind": "clarification"},
+        )
+        clarification_sessions.reset(actor_id)
+        card_updated = await ticket_card_updates.update_group_ticket_card(
+            bot=bot,
+            ticket=result.ticket,
+            notify=False,
+        )
+        if card_updated:
+            logger.info(
+                "Ticket card updated with clarification: ticket_id=%s specialist_user_id=%s",
+                result.ticket.ticket_id,
+                actor_id,
+            )
+        else:
+            logger.warning(
+                "Failed to update ticket card with clarification: ticket_id=%s "
+                "specialist_user_id=%s",
+                result.ticket.ticket_id,
+                actor_id,
+            )
+        await _cleanup_clarification_messages(
+            bot=bot,
+            ticket_id=result.ticket.ticket_id,
+            specialist_user_id=actor_id,
+            prompt_message_id=session.prompt_message_id,
+            specialist_message_id=specialist_message_id,
+        )
+        logger.info(
+            "Clarification question sent: ticket_id=%s actor_id=%s user_id=%s "
+            "prompt_message_id=%s specialist_message_id=%s",
+            result.ticket.ticket_id,
+            actor_id,
+            result.ticket.user_id,
+            session.prompt_message_id,
+            specialist_message_id,
+        )
+        return True
+
     async def _relay_user_reply_to_group(
         event: MessageCreated,
         *,
@@ -555,6 +1161,7 @@ def register(dp) -> None:
         sender_name: str,
         text: str,
         attachments: list[Any],
+        audio_source_message: UserDraftSourceMessage | None = None,
     ) -> bool:
         reply_mid = _resolve_replied_mid(event)
         if not reply_mid:
@@ -573,25 +1180,32 @@ def register(dp) -> None:
             await event.message.answer("Ответ по заявке может отправлять только её автор.")
             return True
 
-        if not text and not attachments:
+        if not text and not attachments and not audio_source_message:
             return True
 
         relay_text = (
             f"Сообщение от пользователя по заявке {ticket.ticket_id}\n"
             f"Пользователь: {sender_name}\n"
-            f"Сообщение:\n{text or '[вложение]'}"
+            f"Сообщение:\n{_message_text_or_media_placeholder(text, audio_source_message)}"
         )
+        user_mid = getattr(getattr(event.message, "body", None), "mid", None)
+        user_mid = str(user_mid) if user_mid else None
+
         try:
             if attachments:
                 group_sent = await event._ensure_bot().send_message(
                     chat_id=cfg.bot.group_chat_id,
                     text=relay_text,
-                    attachments=attachments,
+                    attachments=[
+                        *attachments,
+                        build_attach_user_reply_keyboard(ticket.ticket_id),
+                    ],
                 )
             else:
                 group_sent = await event._ensure_bot().send_message(
                     chat_id=cfg.bot.group_chat_id,
                     text=relay_text,
+                    attachments=[build_attach_user_reply_keyboard(ticket.ticket_id)],
                 )
         except Exception:
             logger.exception(
@@ -603,12 +1217,54 @@ def register(dp) -> None:
             return True
 
         if group_sent and getattr(group_sent, "message", None) and group_sent.message.body:
+            group_mid = group_sent.message.body.mid
             ticket_links.bind_group_message(
                 ticket_id=ticket.ticket_id,
-                group_message_id=group_sent.message.body.mid,
+                group_message_id=group_mid,
             )
+            ticket_clarifications.save_user_reply_candidate(
+                ticket_id=ticket.ticket_id,
+                user_id=sender_id,
+                user_name=sender_name,
+                text=_message_text_or_media_placeholder(text, audio_source_message),
+                group_message_id=group_mid,
+                attachments=attachments,
+                source_message_id=user_mid,
+            )
+            await observability.ticket_event(
+                ticket_id=ticket.ticket_id,
+                event_type="user_reply_received",
+                actor_user_id=sender_id,
+                actor_name=sender_name,
+                actor_role="user",
+                source="user_message",
+                related_message_id=str(group_mid),
+                metadata={"has_attachments": bool(attachments or audio_source_message)},
+            )
+            await observability.ticket_event(
+                ticket_id=ticket.ticket_id,
+                event_type="message_relayed_to_group",
+                actor_user_id=sender_id,
+                actor_name=sender_name,
+                actor_role="user",
+                source="user_message",
+                related_message_id=str(group_mid),
+                metadata={"message_kind": "user_reply"},
+            )
+            if audio_source_message:
+                forwarded_audio_mids = await media_forward.forward_audio_messages(
+                    bot=event._ensure_bot(),
+                    source_messages=[audio_source_message],
+                    ticket_id=ticket.ticket_id,
+                    user_id=sender_id,
+                    target_chat_id=cfg.bot.group_chat_id,
+                )
+                for forwarded_mid in forwarded_audio_mids:
+                    ticket_links.bind_group_message(
+                        ticket_id=ticket.ticket_id,
+                        group_message_id=forwarded_mid,
+                    )
 
-        user_mid = getattr(getattr(event.message, "body", None), "mid", None)
         if user_mid:
             ticket_links.bind_user_message(ticket_id=ticket.ticket_id, user_message_id=user_mid)
 
@@ -616,6 +1272,141 @@ def register(dp) -> None:
             "User reply relayed to group: ticket_id=%s user_id=%s",
             ticket.ticket_id,
             sender_id,
+        )
+        return True
+
+    async def _send_pending_user_reply_to_group(
+        event: MessageCreated,
+        *,
+        sender_id: int,
+        sender_name: str,
+        text: str,
+        attachments: list[Any],
+        audio_source_message: UserDraftSourceMessage | None = None,
+    ) -> bool:
+        """Отправляет ответ пользователя из режима ожидания по кнопке."""
+
+        session = user_reply_sessions.get(sender_id)
+        if session is None:
+            return False
+
+        if text == "/cancel":
+            user_reply_sessions.reset(sender_id)
+            await event.message.answer("Ответ по заявке отменён.")
+            logger.info(
+                "User reply session canceled: ticket_id=%s user_id=%s",
+                session.ticket_id,
+                sender_id,
+            )
+            return True
+
+        if is_command_text(text):
+            return False
+
+        if not text and not attachments and not audio_source_message:
+            await event.message.answer("Введите текст ответа или добавьте вложение.")
+            return True
+
+        ticket = await tickets.get_ticket(session.ticket_id)
+        if ticket is None:
+            user_reply_sessions.reset(sender_id)
+            await event.message.answer("Не удалось определить заявку для ответа.")
+            return True
+
+        if sender_id != ticket.user_id:
+            user_reply_sessions.reset(sender_id)
+            await event.message.answer("Ответ по заявке может отправлять только её автор.")
+            return True
+
+        relay_text = (
+            f"Сообщение от пользователя по заявке {ticket.ticket_id}\n"
+            f"Пользователь: {sender_name}\n"
+            f"Сообщение:\n{_message_text_or_media_placeholder(text, audio_source_message)}"
+        )
+        user_mid = getattr(getattr(event.message, "body", None), "mid", None)
+        user_mid = str(user_mid) if user_mid else None
+
+        group_message_id = ticket_links.get_group_message_id(ticket.ticket_id)
+        group_sent_mid = await max_messages.send_message(
+            bot=event._ensure_bot(),
+            chat_id=cfg.bot.group_chat_id,
+            text=relay_text,
+            attachments=[
+                *attachments,
+                build_attach_user_reply_keyboard(ticket.ticket_id),
+            ],
+            reply_to_message_id=group_message_id,
+            text_format=None,
+            notify=False,
+        )
+        if not group_sent_mid:
+            await event.message.answer("Не удалось доставить сообщение в группу поддержки.")
+            logger.warning(
+                "Pending user reply delivery failed: ticket_id=%s user_id=%s",
+                ticket.ticket_id,
+                sender_id,
+            )
+            return True
+
+        ticket_links.bind_group_message(
+            ticket_id=ticket.ticket_id,
+            group_message_id=group_sent_mid,
+        )
+        ticket_clarifications.save_user_reply_candidate(
+            ticket_id=ticket.ticket_id,
+            user_id=sender_id,
+            user_name=sender_name,
+            text=_message_text_or_media_placeholder(text, audio_source_message),
+            group_message_id=group_sent_mid,
+            attachments=attachments,
+            source_message_id=user_mid,
+        )
+        await observability.ticket_event(
+            ticket_id=ticket.ticket_id,
+            event_type="user_reply_received",
+            actor_user_id=sender_id,
+            actor_name=sender_name,
+            actor_role="user",
+            source="user_message",
+            related_message_id=group_sent_mid,
+            metadata={"has_attachments": bool(attachments or audio_source_message)},
+        )
+        await observability.ticket_event(
+            ticket_id=ticket.ticket_id,
+            event_type="message_relayed_to_group",
+            actor_user_id=sender_id,
+            actor_name=sender_name,
+            actor_role="user",
+            source="user_message",
+            related_message_id=group_sent_mid,
+            metadata={"message_kind": "user_reply"},
+        )
+        if audio_source_message:
+            forwarded_audio_mids = await media_forward.forward_audio_messages(
+                bot=event._ensure_bot(),
+                source_messages=[audio_source_message],
+                ticket_id=ticket.ticket_id,
+                user_id=sender_id,
+                target_chat_id=cfg.bot.group_chat_id,
+            )
+            for forwarded_mid in forwarded_audio_mids:
+                ticket_links.bind_group_message(
+                    ticket_id=ticket.ticket_id,
+                    group_message_id=forwarded_mid,
+                )
+        if user_mid:
+            ticket_links.bind_user_message(
+                ticket_id=ticket.ticket_id,
+                user_message_id=user_mid,
+            )
+
+        user_reply_sessions.reset(sender_id)
+        await event.message.answer(f"Ответ по заявке {ticket.ticket_id} отправлен.")
+        logger.info(
+            "Pending user reply relayed to group: ticket_id=%s user_id=%s group_mid=%s",
+            ticket.ticket_id,
+            sender_id,
+            group_sent_mid,
         )
         return True
 
@@ -634,10 +1425,29 @@ def register(dp) -> None:
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if status == "already_approved":
             logger.info("Access request skipped (already_approved): requester_id=%s", sender_id)
+            await observability.audit(
+                action="access_requested",
+                resource_type="user",
+                resource_id=str(sender_id),
+                result="denied",
+                actor_user_id=sender_id,
+                actor_role="user",
+                reason="already_approved",
+            )
             await event.message.answer("Доступ уже одобрен. Используйте /menu.")
             return True
         if status == "already_pending":
             logger.info("Access request repeated (already_pending): requester_id=%s", sender_id)
+            await observability.audit(
+                action="access_requested",
+                resource_type="user",
+                resource_id=str(sender_id),
+                result="success",
+                actor_user_id=sender_id,
+                actor_role="user",
+                reason="already_pending",
+                metadata={"notification_repeated": True},
+            )
             delivered = await _notify_admins_about_access_request(
                 event,
                 sender_id=sender_id,
@@ -657,6 +1467,15 @@ def register(dp) -> None:
             return True
 
         logger.info("Access request created: requester_id=%s", sender_id)
+        await observability.audit(
+            action="access_requested",
+            resource_type="user",
+            resource_id=str(sender_id),
+            result="success",
+            actor_user_id=sender_id,
+            actor_role="user",
+            metadata={"has_phone": bool(phone)},
+        )
         delivered = await _notify_admins_about_access_request(
             event,
             sender_id=sender_id,
@@ -700,8 +1519,9 @@ def register(dp) -> None:
         await event.bot.send_message(
             chat_id=event.chat_id,
             text=(
-                f"👋 Привет, {name}!\n\n"
-                "Используйте меню, чтобы создать обращение в IT Help Desk."
+                f"Привет, {name}!\n\n"
+                "Меню IT Help Desk\n\n"
+                "Нажмите «Создать обращение», чтобы отправить заявку в IT-службу."
             ),
             attachments=[_build_menu_for_user_with_registry(user_id, cfg, access_registry)],
         )
@@ -717,10 +1537,37 @@ def register(dp) -> None:
         if recipient_chat_id == group_chat_id:
             text = normalize_ticket_text(event.message.body.text, "")
             message_attachments = _extract_ticket_media_attachments(event)
+            audio_source_message = _extract_ticket_audio_source_message(event)
+            relay_message_attachments = (
+                _extract_ticket_media_attachments(event, include_audio=False)
+                if audio_source_message
+                else message_attachments
+            )
 
             actor = sender
             actor_id, actor_name = get_sender_identity(actor, fallback_name="Специалист")
             admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
+
+            close_reply_sent = await _send_close_reply_to_user(
+                event,
+                actor_id=actor_id,
+                actor_name=actor_name,
+                text=text,
+                attachments=relay_message_attachments,
+            )
+            if close_reply_sent:
+                return
+
+            clarification_sent = await _send_clarification_question_to_user(
+                event,
+                actor_id=actor_id,
+                actor_name=actor_name,
+                text=text,
+                attachments=relay_message_attachments,
+                audio_source_message=audio_source_message,
+            )
+            if clarification_sent:
+                return
 
             if not text.startswith("/"):
                 if can_view_service_functions(
@@ -733,7 +1580,8 @@ def register(dp) -> None:
                         actor_id=actor_id,
                         actor_name=actor_name,
                         text=text,
-                        attachments=message_attachments,
+                        attachments=relay_message_attachments,
+                        audio_source_message=audio_source_message,
                     )
                     if relayed:
                         return
@@ -768,7 +1616,7 @@ def register(dp) -> None:
                         title="Открытые заявки",
                     ),
                     attachments=attachments,
-                    parse_mode=ParseMode.HTML,
+                    format=ParseMode.HTML,
                 )
                 return
 
@@ -804,7 +1652,7 @@ def register(dp) -> None:
                     specialist_user_id=actor_id,
                     specialist_name=actor_name,
                 )
-            elif action in {"release", "close", "clarify"}:
+            elif action in {"release", "close", "clarify", "close_with_reply"}:
                 existing_ticket = await tickets.get_ticket(ticket_id)
                 if existing_ticket is None:
                     await event.message.answer(specialist_texts.NOT_FOUND_TEXT)
@@ -824,6 +1672,95 @@ def register(dp) -> None:
                     await event.message.answer(specialist_texts.FORBIDDEN_TEXT)
                     return
 
+                if action == "clarify":
+                    active_session = clarification_sessions.get_by_ticket(existing_ticket.ticket_id)
+                    if active_session and active_session.actor_user_id != actor_id:
+                        await event.message.answer(
+                            "Уточнение уже начал другой специалист."
+                        )
+                        return
+
+                    previous_session = clarification_sessions.get(actor_id)
+                    if previous_session and previous_session.prompt_message_id:
+                        await max_messages.delete_message(
+                            bot=event._ensure_bot(),
+                            message_id=previous_session.prompt_message_id,
+                        )
+
+                    session = clarification_sessions.start(
+                        actor_user_id=actor_id,
+                        actor_name=actor_name,
+                        ticket_id=existing_ticket.ticket_id,
+                        group_chat_id=group_chat_id,
+                    )
+                    prompt_sent = await event.message.answer(
+                        "Введите вопрос для пользователя по заявке "
+                        f"{existing_ticket.ticket_id} следующим сообщением "
+                        "в этом чате.",
+                        attachments=[
+                            build_clarification_cancel_keyboard(existing_ticket.ticket_id)
+                        ],
+                    )
+                    prompt_message_id = _extract_message_id(prompt_sent)
+                    clarification_sessions.set_prompt_message_id(actor_id, prompt_message_id)
+                    logger.info(
+                        "Clarification session started: ticket_id=%s specialist_user_id=%s "
+                        "prompt_message_id=%s session_id=%s",
+                        existing_ticket.ticket_id,
+                        actor_id,
+                        prompt_message_id,
+                        session.session_id,
+                    )
+                    return
+
+                if action == "close_with_reply":
+                    if existing_ticket.status == TicketStatus.CLOSED:
+                        await event.message.answer(specialist_texts.ALREADY_CLOSED_TEXT)
+                        return
+                    active_session = close_reply_sessions.get_by_ticket(existing_ticket.ticket_id)
+                    if active_session and active_session.actor_user_id != actor_id:
+                        await event.message.answer(
+                            "Закрытие с ответом уже начал другой специалист."
+                        )
+                        return
+                    previous_session = close_reply_sessions.get(actor_id)
+                    if previous_session and previous_session.prompt_message_id:
+                        await max_messages.delete_message(
+                            bot=event._ensure_bot(),
+                            message_id=previous_session.prompt_message_id,
+                        )
+                    session = close_reply_sessions.start(
+                        actor_user_id=actor_id,
+                        actor_name=actor_name,
+                        ticket_id=existing_ticket.ticket_id,
+                        group_chat_id=group_chat_id,
+                    )
+                    prompt_sent = await event.message.answer(
+                        "Введите сообщение пользователю о выполненной работе.",
+                        attachments=[
+                            build_close_reply_cancel_keyboard(existing_ticket.ticket_id)
+                        ],
+                    )
+                    prompt_message_id = _extract_message_id(prompt_sent)
+                    close_reply_sessions.set_prompt_message_id(actor_id, prompt_message_id)
+                    await observability.ticket_event(
+                        ticket_id=existing_ticket.ticket_id,
+                        event_type="ticket_close_reply_started",
+                        actor_user_id=actor_id,
+                        actor_name=actor_name,
+                        actor_role="IT specialist",
+                        source="group_command",
+                    )
+                    logger.info(
+                        "Close-with-reply session started by command: ticket_id=%s "
+                        "specialist_user_id=%s prompt_message_id=%s session_id=%s",
+                        existing_ticket.ticket_id,
+                        actor_id,
+                        prompt_message_id,
+                        session.session_id,
+                    )
+                    return
+
                 if action == "release":
                     result = await tickets.release_ticket(
                         ticket_id=ticket_id,
@@ -832,13 +1769,6 @@ def register(dp) -> None:
                     )
                 elif action == "close":
                     result = await tickets.close_ticket(
-                        ticket_id=ticket_id,
-                        actor_user_id=actor_id,
-                        actor_name=actor_name,
-                        admin_ids=admin_ids,
-                    )
-                else:
-                    result = await tickets.request_clarification(
                         ticket_id=ticket_id,
                         actor_user_id=actor_id,
                         actor_name=actor_name,
@@ -874,14 +1804,11 @@ def register(dp) -> None:
                 result.ticket.ticket_id,
                 result.ticket.status.value,
             )
-            group_mid = ticket_links.get_group_message_id(result.ticket.ticket_id)
-            if group_mid:
-                await event._ensure_bot().edit_message(
-                    message_id=group_mid,
-                    text=specialist_texts.render_group_ticket(result.ticket),
-                    attachments=[build_ticket_actions_keyboard(result.ticket.ticket_id)],
-                    parse_mode=ParseMode.HTML,
-                )
+            await ticket_card_updates.update_group_ticket_card(
+                bot=event._ensure_bot(),
+                ticket=result.ticket,
+                notify=False,
+            )
 
             if action == "close":
                 await notify_user_ticket_closed(event._ensure_bot(), result.ticket)
@@ -912,6 +1839,39 @@ def register(dp) -> None:
             empty_text_fallback="",
         )
         message_attachments = _extract_ticket_media_attachments(event)
+        audio_source_message = _extract_ticket_audio_source_message(event)
+        draft_message_attachments = (
+            _extract_ticket_media_attachments(event, include_audio=False)
+            if audio_source_message
+            else message_attachments
+        )
+        draft_audio_sources = [audio_source_message] if audio_source_message else None
+
+        if text in {"/start", "/menu"}:
+            user_flow.reset(sender_id)
+            network_session.reset(sender_id)
+            user_reply_sessions.reset(sender_id)
+            await event.message.answer(
+                text=user_texts.WELCOME_TEXT,
+                attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
+            )
+            logger.info(
+                "Main menu command handled by fallback message handler: user_id=%s command=%s",
+                sender_id,
+                text,
+            )
+            return
+
+        pending_reply_sent = await _send_pending_user_reply_to_group(
+            event,
+            sender_id=sender_id,
+            sender_name=sender_name,
+            text=text,
+            attachments=draft_message_attachments,
+            audio_source_message=audio_source_message,
+        )
+        if pending_reply_sent:
+            return
 
         admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
         if can_use_network_tools(
@@ -933,7 +1893,12 @@ def register(dp) -> None:
                 tool = parts[1].strip().lower()
                 target = parts[2].strip()
                 logger.info("/net command: user_id=%s tool=%s target=%s", sender_id, tool, target)
-                result = await network_tools.run_tool(tool, target)
+                result = await network_tools.run_tool(
+                    tool,
+                    target,
+                    actor_user_id=sender_id,
+                    actor_name=sender_name,
+                )
                 await event.message.answer(
                     text=network_texts.render_result(result.title, result.ok, result.details),
                     attachments=[build_network_menu_keyboard()],
@@ -955,7 +1920,7 @@ def register(dp) -> None:
                         await event.message.answer(
                             text=render_guest_search_result(guest_result),
                             attachments=[build_network_main_menu_keyboard()],
-                            parse_mode=ParseMode.HTML,
+                            format=ParseMode.HTML,
                         )
                         return
                     if not guest_result.room_exists:
@@ -970,12 +1935,12 @@ def register(dp) -> None:
                     result = await wifi_vouchers.find_first_by_room(text)
                     await event.message.answer(
                         text=render_voucher_search_result(result),
-                        parse_mode=ParseMode.HTML,
+                        format=ParseMode.HTML,
                     )
                     await event.message.answer(
                         text=render_guest_search_result(guest_result),
                         attachments=[build_network_main_menu_keyboard()],
-                        parse_mode=ParseMode.HTML,
+                        format=ParseMode.HTML,
                     )
                     return
 
@@ -985,7 +1950,12 @@ def register(dp) -> None:
                     net_state.pending_tool,
                     text,
                 )
-                result = await network_tools.run_tool(net_state.pending_tool, text)
+                result = await network_tools.run_tool(
+                    net_state.pending_tool,
+                    text,
+                    actor_user_id=sender_id,
+                    actor_name=sender_name,
+                )
                 network_session.mark_processed(sender_id)
                 await event.message.answer(
                     text=network_texts.render_result(result.title, result.ok, result.details),
@@ -1003,7 +1973,8 @@ def register(dp) -> None:
                 sender_id=sender_id,
                 sender_name=sender_name,
                 text=text,
-                attachments=message_attachments,
+                attachments=draft_message_attachments,
+                audio_source_message=audio_source_message,
             )
             if relayed:
                 return
@@ -1025,7 +1996,8 @@ def register(dp) -> None:
             draft = user_flow.append_problem_chunk(
                 sender_id,
                 text=chunk_text,
-                attachments=message_attachments,
+                attachments=draft_message_attachments,
+                source_audio_messages=draft_audio_sources,
             )
             draft.step = "awaiting_wifi_escalation_text"
             _schedule_problem_submit(sender_id, event._ensure_bot())
@@ -1038,7 +2010,8 @@ def register(dp) -> None:
             draft = user_flow.append_problem_chunk(
                 sender_id,
                 text=chunk_text,
-                attachments=message_attachments,
+                attachments=draft_message_attachments,
+                source_audio_messages=draft_audio_sources,
             )
             draft.step = "awaiting_tv_escalation_text"
             _schedule_problem_submit(sender_id, event._ensure_bot())
@@ -1049,7 +2022,7 @@ def register(dp) -> None:
                 user_flow.begin_create(sender_id)
                 await event.message.answer(
                     text=user_texts.CATEGORY_PROMPT,
-                    attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
+                    attachments=[build_categories_keyboard(get_ticket_categories())],
                 )
                 return
 
@@ -1059,7 +2032,8 @@ def register(dp) -> None:
             draft = user_flow.append_problem_chunk(
                 sender_id,
                 text=chunk_text,
-                attachments=message_attachments,
+                attachments=draft_message_attachments,
+                source_audio_messages=draft_audio_sources,
             )
             draft.step = "awaiting_problem_text"
             _schedule_problem_submit(sender_id, event._ensure_bot())
@@ -1080,7 +2054,8 @@ def register(dp) -> None:
                 draft = user_flow.append_problem_chunk(
                     sender_id,
                     text=chunk_text,
-                    attachments=message_attachments,
+                    attachments=draft_message_attachments,
+                    source_audio_messages=draft_audio_sources,
                 )
                 draft.step = "awaiting_problem_text"
                 _schedule_problem_submit(sender_id, event._ensure_bot())

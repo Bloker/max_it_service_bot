@@ -5,12 +5,13 @@ aiosignal==1.4.0
 annotated-types==0.7.0
 asyncio==4.0.0
 attrs==25.4.0
+backoff==2.2.1
 environs==14.5.0
 frozenlist==1.8.0
 idna==3.11
 magic-filter==1.0.12
 marshmallow==4.2.2
-maxapi==0.9.13
+maxapi==1.2.1
 multidict==6.7.1
 propcache==0.4.1
 puremagic==1.30
@@ -21,3 +22,4 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 yarl==1.22.0
 psycopg[binary]==3.3.3
+SQLAlchemy>=2.0,<2.1

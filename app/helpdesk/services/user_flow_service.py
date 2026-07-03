@@ -5,6 +5,15 @@ from typing import Any
 
 
 @dataclass(slots=True)
+class UserDraftSourceMessage:
+    """Исходное сообщение пользователя, которое нужно переслать нативно."""
+
+    message: Any
+    message_id: str | None = None
+    attachments: list[Any] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class UserDraft:
     """Черновик пользовательской заявки в текущем диалоге."""
 
@@ -12,6 +21,7 @@ class UserDraft:
     problem_text: str | None = None
     step: str = "idle"
     attachments: list[Any] = field(default_factory=list)
+    source_audio_messages: list[UserDraftSourceMessage] = field(default_factory=list)
 
 
 class UserFlowService:
@@ -34,6 +44,7 @@ class UserFlowService:
         draft.category = None
         draft.problem_text = None
         draft.attachments = []
+        draft.source_audio_messages = []
         return draft
 
     def set_category(self, user_id: int, category: str) -> UserDraft:
@@ -57,6 +68,7 @@ class UserFlowService:
         user_id: int,
         text: str | None = None,
         attachments: list[Any] | None = None,
+        source_audio_messages: list[UserDraftSourceMessage] | None = None,
     ) -> UserDraft:
         """Добавляет текст или вложения к текущему черновику заявки."""
 
@@ -69,4 +81,6 @@ class UserFlowService:
                 draft.problem_text = normalized
         if attachments:
             draft.attachments.extend(attachments)
+        if source_audio_messages:
+            draft.source_audio_messages.extend(source_audio_messages)
         return draft

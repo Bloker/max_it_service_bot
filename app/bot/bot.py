@@ -1,8 +1,10 @@
 """Инициализация MAX Bot API, dispatcher и long polling."""
 
 import asyncio
+import json
 import logging
 from time import monotonic
+from typing import Any
 
 from maxapi import Bot, Dispatcher
 
@@ -11,6 +13,110 @@ from config.config import BotConfig
 from config.config import get_config
 
 logger = logging.getLogger(__name__)
+
+VOICE_ATTACHMENT_TYPES = frozenset({
+    "voice",
+    "voice_message",
+    "voice_note",
+    "audiomessage",
+    "audio_message",
+    "audiomsg",
+    "ptt",
+})
+VOICELESS_MESSAGE_UPDATE_FIELDS = frozenset({
+    "timestamp",
+    "user_locale",
+    "update_type",
+})
+
+
+def _normalize_voice_attachments(events: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Приводит voice-вложения к типу ``audio`` до pydantic-валидации maxapi.
+
+    MAX API может возвращать аудиосообщения с ``type`` вроде ``voice`` или
+    ``audio_message``, которые не входят в discriminated union ``maxapi``.
+    Без нормализации всё событие ``message_created`` отбрасывается на этапе
+    парсинга, и handler никогда не вызывается.
+    """
+
+    if not events or not isinstance(events, dict):
+        return events
+
+    updates = events.get("updates")
+    if not isinstance(updates, list):
+        return events
+
+    normalized_count = 0
+    for update in updates:
+        if not isinstance(update, dict):
+            continue
+        update_type = update.get("update_type", "")
+        if update_type != "message_created":
+            continue
+
+        _log_raw_update(update, update_type, reason="debug-all-message-created")
+
+        message = update.get("message")
+        if not isinstance(message, dict):
+            update_fields = set(update.keys())
+            if update_fields <= VOICELESS_MESSAGE_UPDATE_FIELDS:
+                logger.warning(
+                    "MessageCreated update without message payload cannot be handled: "
+                    "fields=%s. MAX API did not provide message/mid for this update.",
+                    sorted(update_fields),
+                )
+            continue
+        body = message.get("body")
+        if not isinstance(body, dict):
+            continue
+        attachments = body.get("attachments")
+        if not isinstance(attachments, list):
+            continue
+
+        att_types = [
+            att.get("type") if isinstance(att, dict) else type(att).__name__
+            for att in attachments
+        ]
+        if att_types:
+            logger.info(
+                "Raw message_created attachments: types=%s",
+                att_types,
+            )
+
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            att_type = attachment.get("type")
+            if isinstance(att_type, str) and att_type.lower() in VOICE_ATTACHMENT_TYPES:
+                logger.info(
+                    "Normalizing voice attachment: original_type=%s -> audio",
+                    att_type,
+                )
+                attachment["type"] = "audio"
+                normalized_count += 1
+
+    if normalized_count:
+        logger.info(
+            "Voice attachments normalized to audio: count=%s",
+            normalized_count,
+        )
+
+    return events
+
+
+def _log_raw_update(update: dict[str, Any], update_type: str, *, reason: str) -> None:
+    """Логирует сырой update для отладки проблем парсинга maxapi."""
+
+    try:
+        raw_json = json.dumps(update, ensure_ascii=False, default=str)[:5000]
+    except Exception:
+        raw_json = str(update)[:3000]
+    logger.warning(
+        "Raw update debug: update_type=%s reason=%s raw=%s",
+        update_type,
+        reason,
+        raw_json,
+    )
 
 
 def register_routes(dp: Dispatcher) -> None:
@@ -35,12 +141,13 @@ def configure_long_polling_limits(bot: Bot, cfg: BotConfig) -> None:
             await asyncio.sleep(cfg.polling_min_interval_sec - elapsed)
 
         last_request_at = monotonic()
-        return await original_get_updates(
+        events = await original_get_updates(
             limit=limit if limit is not None else cfg.polling_limit,
             timeout=timeout if timeout is not None else cfg.polling_timeout_sec,
             marker=marker,
             types=types,
         )
+        return _normalize_voice_attachments(events)
 
     bot.get_updates = get_updates_with_limits
 

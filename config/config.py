@@ -38,6 +38,7 @@ class TicketStorageConfig:
     """Настройки хранилища заявок HelpDesk."""
 
     backend: str
+    schema_mode: str
     sqlite_path: str
     postgres_host: str
     postgres_port: int
@@ -116,6 +117,15 @@ class NetariumConfig:
 
 
 @dataclass(frozen=True)
+class ObservabilityConfig:
+    """Флаги audit/events/observability."""
+
+    audit_enabled: bool
+    ticket_events_enabled: bool
+    network_tool_runs_enabled: bool
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Полная конфигурация приложения."""
 
@@ -125,6 +135,7 @@ class AppConfig:
     network_tools: NetworkToolsConfig
     wifi_link: WifiLinkConfig
     netarium: NetariumConfig
+    observability: ObservabilityConfig
 
 
 def _load_environment() -> None:
@@ -246,6 +257,16 @@ def get_config() -> AppConfig:
     ticket_backend = os.getenv("MAX_TICKET_BACKEND", "sqlite").strip().lower()
     if ticket_backend not in {"sqlite", "memory", "postgres"}:
         raise RuntimeError("MAX_TICKET_BACKEND must be 'sqlite', 'memory' or 'postgres'")
+
+    ticket_schema_mode = os.getenv("MAX_TICKET_SCHEMA_MODE", "legacy").strip().lower()
+    if ticket_schema_mode not in {"legacy", "shadow_read", "normalized"}:
+        raise RuntimeError(
+            "MAX_TICKET_SCHEMA_MODE must be 'legacy', 'shadow_read' or 'normalized'"
+        )
+    if ticket_backend != "postgres" and ticket_schema_mode != "legacy":
+        raise RuntimeError(
+            "MAX_TICKET_SCHEMA_MODE can be 'shadow_read' or 'normalized' only with postgres backend"
+        )
 
     ticket_sqlite_path = os.getenv("MAX_TICKET_DB_PATH", "data/helpdesk_tickets.sqlite3").strip()
     if not ticket_sqlite_path:
@@ -380,6 +401,12 @@ def get_config() -> AppConfig:
     if netarium_cache_ttl_sec < 0:
         raise RuntimeError("MAX_NETARIUM_CACHE_TTL_SEC must be >= 0")
 
+    observability = ObservabilityConfig(
+        audit_enabled=_parse_bool_env("MAX_AUDIT_ENABLED", True),
+        ticket_events_enabled=_parse_bool_env("MAX_TICKET_EVENTS_ENABLED", True),
+        network_tool_runs_enabled=_parse_bool_env("MAX_NETWORK_TOOL_RUNS_ENABLED", True),
+    )
+
     return AppConfig(
         bot=BotConfig(
             token=token,
@@ -396,6 +423,7 @@ def get_config() -> AppConfig:
         logs=logs,
         tickets=TicketStorageConfig(
             backend=ticket_backend,
+            schema_mode=ticket_schema_mode,
             sqlite_path=ticket_sqlite_path,
             postgres_host=ticket_pg_host,
             postgres_port=ticket_pg_port,
@@ -431,6 +459,7 @@ def get_config() -> AppConfig:
             timeout_sec=netarium_timeout_sec,
             cache_ttl_sec=netarium_cache_ttl_sec,
         ),
+        observability=observability,
     )
 
 

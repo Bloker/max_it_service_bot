@@ -9,8 +9,8 @@ _MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
 WELCOME_TEXT = (
-    "Привет! Это IT Help Desk.\n"
-    "Выберите действие в меню ниже."
+    "Меню IT Help Desk\n\n"
+    "Нажмите «Создать обращение», чтобы отправить заявку в IT-службу."
 )
 
 HELP_TEXT = (
@@ -59,6 +59,16 @@ def render_ticket_closed_notification(ticket: Ticket) -> str:
     return (
         f"Заявка №{ticket.ticket_id} "
         f"от {_format_ticket_created_at(ticket.created_at)} выполнена."
+    )
+
+
+def render_ticket_closed_with_reply_notification(ticket: Ticket, reply_text: str) -> str:
+    """Форматирует уведомление о закрытии заявки с комментарием специалиста."""
+
+    return (
+        f"Заявка {ticket.ticket_id} выполнена.\n\n"
+        "Комментарий специалиста:\n"
+        f"{reply_text}"
     )
 
 

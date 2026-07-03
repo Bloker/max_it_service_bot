@@ -72,7 +72,12 @@ def register(dp) -> None:
             tool = parts[1].strip().lower()
             target = parts[2].strip()
             logger.info("/net command: user_id=%s tool=%s target=%s", actor_id, tool, target)
-            result = await network_tools.run_tool(tool, target)
+            result = await network_tools.run_tool(
+                tool,
+                target,
+                actor_user_id=actor_id,
+                actor_name=getattr(event.message.sender, "name", None),
+            )
             await event.message.answer(
                 text=network_texts.render_result(result.title, result.ok, result.details),
                 attachments=[build_network_menu_keyboard()],
@@ -98,7 +103,7 @@ def register(dp) -> None:
                 await event.message.answer(
                     text=render_guest_search_result(guest_result),
                     attachments=[build_network_main_menu_keyboard()],
-                    parse_mode=ParseMode.HTML,
+                    format=ParseMode.HTML,
                 )
                 return
             if not guest_result.room_exists:
@@ -112,12 +117,12 @@ def register(dp) -> None:
             result = await wifi_vouchers.find_first_by_room(text)
             await event.message.answer(
                 text=render_voucher_search_result(result),
-                parse_mode=ParseMode.HTML,
+                format=ParseMode.HTML,
             )
             await event.message.answer(
                 text=render_guest_search_result(guest_result),
                 attachments=[build_network_main_menu_keyboard()],
-                parse_mode=ParseMode.HTML,
+                format=ParseMode.HTML,
             )
             return
 
@@ -127,7 +132,12 @@ def register(dp) -> None:
             session.pending_tool,
             text,
         )
-        result = await network_tools.run_tool(session.pending_tool, text)
+        result = await network_tools.run_tool(
+            session.pending_tool,
+            text,
+            actor_user_id=actor_id,
+            actor_name=getattr(event.message.sender, "name", None),
+        )
         network_session.mark_processed(actor_id)
         await event.message.answer(
             text=network_texts.render_result(result.title, result.ok, result.details),

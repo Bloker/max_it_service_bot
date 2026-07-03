@@ -4,6 +4,8 @@ import unittest
 from app.helpdesk.models.ticket import TicketStatus
 from app.helpdesk.repositories.in_memory_ticket_repository import InMemoryTicketRepository
 from app.helpdesk.services.ticket_lifecycle_service import TicketLifecycleService
+from app.observability.services import ObservabilityService
+from tests.test_observability_service import FakeObservabilityRepository
 
 
 class TicketLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -78,6 +80,31 @@ class TicketLifecycleTests(unittest.IsolatedAsyncioTestCase):
         all_ids = {ticket.ticket_id for ticket in all_tickets}
         self.assertIn(t1.ticket_id, all_ids)
         self.assertIn(t2.ticket_id, all_ids)
+
+    async def test_lifecycle_writes_business_events(self) -> None:
+        repository = FakeObservabilityRepository()
+        service = TicketLifecycleService(
+            InMemoryTicketRepository(),
+            observability=ObservabilityService(repository=repository),
+        )
+
+        ticket = await service.create_ticket(101, "User", "cat", "text", None, None)
+        await service.take_ticket(ticket.ticket_id, 501, "Spec")
+
+        event_types = [item.event_type for item in repository.ticket_events]
+        audit_actions = [item.action for item in repository.audit_records]
+        self.assertIn("ticket_created", event_types)
+        self.assertIn("ticket_assigned", event_types)
+        self.assertIn("ticket_status_changed", event_types)
+        status_event = next(
+            item
+            for item in repository.ticket_events
+            if item.event_type == "ticket_status_changed"
+        )
+        self.assertEqual(status_event.old_status, "new")
+        self.assertEqual(status_event.new_status, "in_progress")
+        self.assertIn("ticket_created", audit_actions)
+        self.assertIn("ticket_assigned", audit_actions)
 
 
 if __name__ == '__main__':

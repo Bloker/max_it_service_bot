@@ -14,7 +14,10 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_main_menu_keyboard,
     build_registration_keyboard,
 )
-from app.helpdesk.runtime import get_ticket_service, get_user_flow_service
+from app.helpdesk.runtime import (
+    get_ticket_service,
+    get_user_flow_service,
+)
 from app.helpdesk.services.menu_service import get_helpdesk_commands
 from app.helpdesk.texts import user_texts
 from app.network.keyboards.network_keyboards import build_network_menu_keyboard
@@ -23,7 +26,11 @@ from app.network.texts import network_texts
 from config.config import get_config
 
 
-START_TEXT_TEMPLATE = "👋 Привет, {name}!\n\nIT Help Desk готов принять обращение."
+START_TEXT_TEMPLATE = (
+    "Привет, {name}!\n\n"
+    "Меню IT Help Desk\n\n"
+    "Нажмите «Создать обращение», чтобы отправить заявку в IT-службу."
+)
 
 
 def _build_help_text() -> str:
@@ -374,7 +381,7 @@ def register(dp) -> None:
                 text=(
                     "Ваша заявка одобрена.\n"
                     f"Назначена роль: {role_label}\n"
-                    "Используйте /start или /menu."
+                    "Главное меню доступно ниже."
                 ),
                 attachments=[_build_menu_for_user(target_user_id, cfg, access_registry)],
             )

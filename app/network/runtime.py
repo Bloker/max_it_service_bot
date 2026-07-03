@@ -8,6 +8,7 @@ from app.network.services.session_service import NetworkSessionService
 from app.network.services.templates_service import NetworkTemplatesService
 from app.network.services.tools_service import NetworkToolsService
 from app.network.wifi.voucher_service import WifiVoucherService
+from app.observability.runtime import get_observability_service
 from config.config import get_config
 
 
@@ -37,6 +38,7 @@ def get_network_tools_service() -> NetworkToolsService:
         policy=policy,
         features=cfg.network_tools.features,
         templates=templates,
+        observability=get_observability_service(),
     )
     return _network_tools_service
 

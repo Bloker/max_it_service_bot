@@ -2,7 +2,13 @@
 
 from maxapi.types import ButtonsPayload, CallbackButton, RequestContactButton
 
-from app.helpdesk.payloads import SpecialistTicketPayload, UserMenuPayload
+from app.helpdesk.models.ticket import Ticket, TicketStatus
+from app.helpdesk.payloads import (
+    ClarificationCancelPayload,
+    CloseReplyCancelPayload,
+    SpecialistTicketPayload,
+    UserMenuPayload,
+)
 
 
 def build_main_menu_keyboard(
@@ -19,23 +25,23 @@ def build_main_menu_keyboard(
 ):
     """Собирает главное меню с учетом роли и доступных функций."""
 
+    buttons = []
+
+    if can_create_ticket:
+        buttons.append(
+            [CallbackButton(text="Создать обращение", payload=UserMenuPayload(action="create").pack())]
+        )
+
     if can_use_wifi_help:
-        buttons = [
-            [CallbackButton(text="Проблема Wi-Fi у гостя", payload=UserMenuPayload(action="wifi").pack())],
-        ]
-    else:
-        buttons = []
+        buttons.append(
+            [CallbackButton(text="Проблема Wi-Fi у гостя", payload=UserMenuPayload(action="wifi").pack())]
+        )
 
     # Временно скрыто до подготовки дорожной карты по TV-инцидентам.
     # if can_use_tv_help:
     #     buttons.append(
     #         [CallbackButton(text="Проблема с TV у гостя", payload=UserMenuPayload(action="tv_guest").pack())]
     #     )
-
-    if can_create_ticket:
-        buttons.append(
-            [CallbackButton(text="Создать обращение", payload=UserMenuPayload(action="create").pack())]
-        )
 
     if can_view_my_tickets:
         buttons.append([CallbackButton(text="Мои обращения", payload=UserMenuPayload(action="my").pack())])
@@ -78,7 +84,7 @@ def build_categories_keyboard(categories: list[str]):
         [CallbackButton(text=category, payload=UserMenuPayload(action="cat", value=category).pack())]
         for category in categories
     ]
-    rows.append([CallbackButton(text="Назад", payload=UserMenuPayload(action="menu").pack())])
+    rows.append([CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())])
     return ButtonsPayload(buttons=rows).pack()
 
 
@@ -109,7 +115,7 @@ def build_wifi_scope_keyboard():
                     payload=UserMenuPayload(action="wifi_scope_all").pack(),
                 )
             ],
-            [CallbackButton(text="Отмена", payload=UserMenuPayload(action="menu").pack())],
+            [CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())],
         ]
     ).pack()
 
@@ -129,7 +135,7 @@ def build_wifi_device_keyboard():
                     payload=UserMenuPayload(action="wifi_device_laptop").pack(),
                 )
             ],
-            [CallbackButton(text="Отмена", payload=UserMenuPayload(action="menu").pack())],
+            [CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())],
         ]
     ).pack()
 
@@ -139,7 +145,7 @@ def build_wifi_auth_keyboard():
         buttons=[
             [CallbackButton(text="Да", payload=UserMenuPayload(action="wifi_auth_yes").pack())],
             [CallbackButton(text="Нет", payload=UserMenuPayload(action="wifi_auth_no").pack())],
-            [CallbackButton(text="Отмена", payload=UserMenuPayload(action="menu").pack())],
+            [CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())],
         ]
     ).pack()
 
@@ -154,6 +160,7 @@ def build_wifi_resolution_keyboard():
                     payload=UserMenuPayload(action="wifi_unresolved").pack(),
                 )
             ],
+            [CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())],
         ]
     ).pack()
 
@@ -368,17 +375,87 @@ def build_registration_keyboard():
     ).pack()
 
 
-def build_ticket_actions_keyboard(ticket_id: str):
-    """Собирает кнопки действий специалиста по заявке."""
+def build_clarification_cancel_keyboard(ticket_id: str):
+    """Собирает кнопку отмены ожидающего вопроса уточнения."""
 
     return ButtonsPayload(
         buttons=[
             [
                 CallbackButton(
-                    text="Взять в работу",
-                    payload=SpecialistTicketPayload(action="take", ticket_id=ticket_id).pack(),
+                    text="Отмена",
+                    payload=ClarificationCancelPayload(ticket_id=ticket_id).pack(),
                 )
-            ],
+            ]
+        ]
+    ).pack()
+
+
+def build_clarification_reply_keyboard(ticket_id: str):
+    """Собирает кнопку ответа пользователя на уточнение."""
+
+    return ButtonsPayload(
+        buttons=[
+            [
+                CallbackButton(
+                    text="Ответить",
+                    payload=UserMenuPayload(
+                        action="ticket_reply",
+                        value=ticket_id,
+                    ).pack(),
+                )
+            ]
+        ]
+    ).pack()
+
+
+def build_close_reply_cancel_keyboard(ticket_id: str):
+    """Собирает кнопку отмены закрытия с ответом."""
+
+    return ButtonsPayload(
+        buttons=[
+            [
+                CallbackButton(
+                    text="Отмена",
+                    payload=CloseReplyCancelPayload(ticket_id=ticket_id).pack(),
+                )
+            ]
+        ]
+    ).pack()
+
+
+def build_attach_user_reply_keyboard(ticket_id: str):
+    """Собирает кнопку прикрепления ответа пользователя к карточке."""
+
+    return ButtonsPayload(
+        buttons=[
+            [
+                CallbackButton(
+                    text="Прикрепить к карточке",
+                    payload=SpecialistTicketPayload(
+                        action="attach_reply",
+                        ticket_id=ticket_id,
+                    ).pack(),
+                )
+            ]
+        ]
+    ).pack()
+
+
+def build_ticket_actions_keyboard(ticket_or_id: Ticket | str):
+    """Собирает кнопки действий специалиста по заявке."""
+
+    if isinstance(ticket_or_id, Ticket):
+        ticket_id = ticket_or_id.ticket_id
+        status = ticket_or_id.status
+    else:
+        ticket_id = str(ticket_or_id)
+        status = None
+
+    action_rows: list[list[CallbackButton]] = []
+    if status == TicketStatus.CLOSED:
+        action_rows = []
+    elif status == TicketStatus.IN_PROGRESS:
+        action_rows = [
             [
                 CallbackButton(
                     text="Освободить",
@@ -389,6 +466,76 @@ def build_ticket_actions_keyboard(ticket_id: str):
                     payload=SpecialistTicketPayload(action="close", ticket_id=ticket_id).pack(),
                 ),
             ],
+            [
+                CallbackButton(
+                    text="Закрыть с ответом",
+                    payload=SpecialistTicketPayload(
+                        action="close_with_reply",
+                        ticket_id=ticket_id,
+                    ).pack(),
+                )
+            ],
+            [
+                CallbackButton(
+                    text="Запросить уточнение",
+                    payload=SpecialistTicketPayload(action="clarify", ticket_id=ticket_id).pack(),
+                )
+            ],
+        ]
+    elif status == TicketStatus.WAITING_USER:
+        action_rows = [
+            [
+                CallbackButton(
+                    text="Взять в работу",
+                    payload=SpecialistTicketPayload(action="take", ticket_id=ticket_id).pack(),
+                ),
+                CallbackButton(
+                    text="Закрыть",
+                    payload=SpecialistTicketPayload(action="close", ticket_id=ticket_id).pack(),
+                ),
+            ],
+            [
+                CallbackButton(
+                    text="Закрыть с ответом",
+                    payload=SpecialistTicketPayload(
+                        action="close_with_reply",
+                        ticket_id=ticket_id,
+                    ).pack(),
+                )
+            ],
+        ]
+    else:
+        action_rows = [
+            [
+                CallbackButton(
+                    text="Взять в работу",
+                    payload=SpecialistTicketPayload(action="take", ticket_id=ticket_id).pack(),
+                )
+            ],
+            [
+                CallbackButton(
+                    text="Запросить уточнение",
+                    payload=SpecialistTicketPayload(action="clarify", ticket_id=ticket_id).pack(),
+                ),
+                CallbackButton(
+                    text="Закрыть",
+                    payload=SpecialistTicketPayload(action="close", ticket_id=ticket_id).pack(),
+                ),
+            ],
+            [
+                CallbackButton(
+                    text="Закрыть с ответом",
+                    payload=SpecialistTicketPayload(
+                        action="close_with_reply",
+                        ticket_id=ticket_id,
+                    ).pack(),
+                )
+            ],
+        ]
+
+    return ButtonsPayload(
+        buttons=[
+            *action_rows,
             [
                 CallbackButton(
                     text="Не закрытые заявки",

@@ -19,6 +19,7 @@
   - `MAX_IT_SPECIALIST_IDS`
 - Хранилище заявок:
   - `MAX_TICKET_BACKEND` (`sqlite`/`memory`/`postgres`)
+  - `MAX_TICKET_SCHEMA_MODE` (`legacy`/`shadow_read`/`normalized`, default `legacy`)
   - `MAX_TICKET_DB_PATH`
   - `MAX_TICKET_PG_HOST`
   - `MAX_TICKET_PG_PORT`
@@ -88,3 +89,29 @@
    - `python scripts/apply_postgres_migration.py`
 3. Перенесите реестр пользователей из JSON в `auth.*`:
    - `python scripts/migrate_user_registry_to_auth.py`
+
+## 11) Source of truth заявок
+Для PostgreSQL backend доступен управляемый режим схемы:
+
+- `MAX_TICKET_SCHEMA_MODE=legacy` — default и rollback-режим; заявки пишутся в `public.helpdesk_tickets`, `helpdesk.tickets` обновляется trigger sync.
+- `MAX_TICKET_SCHEMA_MODE=shadow_read` — запись остаётся legacy, чтение legacy используется как основной результат, normalized чтение сверяется в warning-логах.
+- `MAX_TICKET_SCHEMA_MODE=normalized` — заявки читаются и пишутся через `helpdesk.tickets`.
+
+Production не переключать на `shadow_read` или `normalized` без отдельной команды владельца.
+
+Read-only сверка legacy и normalized:
+
+```bash
+MAX_TICKET_BACKEND=postgres python scripts/reconcile_ticket_schemas.py --db test_dev_max
+```
+
+Rollback для dev/test:
+
+```text
+MAX_TICKET_SCHEMA_MODE=legacy
+restart dev/test bot
+```
+
+Важно: в `normalized` режиме новые заявки пишутся только в `helpdesk.tickets`.
+До production switch нужен отдельный этап reverse sync или dual-write, иначе legacy
+таблица будет отставать и rollback с данными потребует backfill.

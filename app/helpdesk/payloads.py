@@ -15,3 +15,15 @@ class SpecialistTicketPayload(CallbackPayload, prefix="spc"):
 
     action: str
     ticket_id: str
+
+
+class ClarificationCancelPayload(CallbackPayload, prefix="clc"):
+    """Payload отмены ожидающего вопроса уточнения."""
+
+    ticket_id: str
+
+
+class CloseReplyCancelPayload(CallbackPayload, prefix="crc"):
+    """Payload отмены закрытия заявки с ответом."""
+
+    ticket_id: str
