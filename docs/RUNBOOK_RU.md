@@ -115,3 +115,42 @@ restart dev/test bot
 Важно: в `normalized` режиме новые заявки пишутся только в `helpdesk.tickets`.
 До production switch нужен отдельный этап reverse sync или dual-write, иначе legacy
 таблица будет отставать и rollback с данными потребует backfill.
+
+## 12) Production rollout 2026-07-03
+
+Production обновлен до:
+
+```text
+commit: e437e04 prepare helpdesk rollout features
+service: max-it-bot.service active/running
+MAX_TICKET_SCHEMA_MODE=legacy
+```
+
+Перед миграциями создан backup:
+
+```text
+host: 192.168.1.221
+path: /root/db_backups/max_it_helpdesk_bot_20260703_112816_before_rollout.dump
+size: 92K
+```
+
+Применены production migrations:
+
+```text
+db/migrations/20260702_persist_ticket_comments_attachments.sql
+db/migrations/20260702_audit_events_observability.sql
+```
+
+Проверки после rollout:
+
+```text
+compileall: OK
+unittest: Ran 134 tests in 0.238s, OK
+reconcile max_it_helpdesk_bot: pending=0, only_public=0, only_helpdesk=0, duplicates=0, orphan=0
+fresh journal after restart: no traceback/error/db error/pydantic crash loop by grep
+```
+
+Важно: production не переключался на `shadow_read` или `normalized`.
+Оставшийся ручной шаг: выполнить smoke в MAX по `docs/MANUAL_CHECKLIST_RU.md`
+для создания заявки, уточнения, прикрепления ответа, закрытия с ответом и
+проверки HTML `tel:` телефона в web-клиенте.
