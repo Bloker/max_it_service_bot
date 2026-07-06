@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from config.config import get_config
+from config import config as config_module
 
 
 BASE_ENV = {
@@ -19,7 +19,8 @@ BASE_ENV = {
 class WebhookConfigTests(unittest.TestCase):
     def test_update_mode_defaults_to_longpoll(self) -> None:
         with patch.dict(os.environ, BASE_ENV, clear=True):
-            cfg = get_config()
+            with patch.object(config_module, "_load_environment", lambda: None):
+                cfg = config_module.get_config()
 
         self.assertEqual(cfg.bot.update_mode, "longpoll")
         self.assertEqual(cfg.bot.webhook_host, "127.0.0.1")
@@ -33,7 +34,8 @@ class WebhookConfigTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 env = {**BASE_ENV, "MAX_UPDATE_MODE": mode}
                 with patch.dict(os.environ, env, clear=True):
-                    cfg = get_config()
+                    with patch.object(config_module, "_load_environment", lambda: None):
+                        cfg = config_module.get_config()
 
                 self.assertEqual(cfg.bot.update_mode, mode)
 
@@ -41,7 +43,8 @@ class WebhookConfigTests(unittest.TestCase):
         env = {**BASE_ENV, "MAX_UPDATE_MODE": "bad"}
         with patch.dict(os.environ, env, clear=True):
             with self.assertRaises(RuntimeError):
-                get_config()
+                with patch.object(config_module, "_load_environment", lambda: None):
+                    config_module.get_config()
 
     def test_webhook_settings_are_parsed(self) -> None:
         env = {
@@ -54,7 +57,8 @@ class WebhookConfigTests(unittest.TestCase):
             "MAX_WEBHOOK_SECRET": "secret",
         }
         with patch.dict(os.environ, env, clear=True):
-            cfg = get_config()
+            with patch.object(config_module, "_load_environment", lambda: None):
+                cfg = config_module.get_config()
 
         self.assertEqual(cfg.bot.webhook_host, "127.0.0.2")
         self.assertEqual(cfg.bot.webhook_port, 9090)
@@ -66,7 +70,8 @@ class WebhookConfigTests(unittest.TestCase):
         env = {**BASE_ENV, "MAX_WEBHOOK_PATH": "hook"}
         with patch.dict(os.environ, env, clear=True):
             with self.assertRaises(RuntimeError):
-                get_config()
+                with patch.object(config_module, "_load_environment", lambda: None):
+                    config_module.get_config()
 
     def test_webhook_paths_must_be_different(self) -> None:
         env = {
@@ -76,7 +81,8 @@ class WebhookConfigTests(unittest.TestCase):
         }
         with patch.dict(os.environ, env, clear=True):
             with self.assertRaises(RuntimeError):
-                get_config()
+                with patch.object(config_module, "_load_environment", lambda: None):
+                    config_module.get_config()
 
 
 if __name__ == "__main__":
