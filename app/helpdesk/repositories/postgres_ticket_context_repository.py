@@ -8,6 +8,7 @@ from app.helpdesk.repositories.ticket_context_repository import (
     TicketAttachmentRecord,
     TicketCommentRecord,
 )
+from app.infrastructure.database.psycopg_connection import connect_utf8
 
 
 class PostgresTicketContextRepository:
@@ -32,13 +33,12 @@ class PostgresTicketContextRepository:
 
     def _connect(self):
         try:
-            import psycopg
             from psycopg.rows import dict_row
         except ImportError as exc:
             raise RuntimeError(
                 "PostgreSQL ticket context repository requires psycopg."
             ) from exc
-        return psycopg.connect(self._conninfo, row_factory=dict_row)
+        return connect_utf8(self._conninfo, row_factory=dict_row)
 
     def _resolve_ticket_pk(self, cur, ticket_key: str) -> int | None:
         cur.execute(

@@ -4,6 +4,7 @@ import json
 import threading
 from typing import Any
 
+from app.infrastructure.database.psycopg_connection import connect_utf8
 from app.observability.models import AuditRecord, NetworkToolRunRecord, TicketEventRecord
 
 
@@ -28,11 +29,7 @@ class PostgresObservabilityRepository:
         self._lock = threading.Lock()
 
     def _connect(self):
-        try:
-            import psycopg
-        except ImportError as exc:
-            raise RuntimeError("PostgreSQL observability repository requires psycopg.") from exc
-        return psycopg.connect(self._conninfo)
+        return connect_utf8(self._conninfo)
 
     def _resolve_ticket_pk(self, cur, ticket_key: str) -> int | None:
         cur.execute(

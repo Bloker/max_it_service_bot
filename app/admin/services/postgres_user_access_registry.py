@@ -4,6 +4,7 @@ import threading
 from datetime import datetime, timezone
 
 from app.admin.services.user_access_registry import PendingAccessRequest, RegisteredUser
+from app.infrastructure.database.psycopg_connection import connect_utf8
 
 HOTEL_LABELS: dict[str, str] = {
     "jamaica": "Отель Джамайка",
@@ -46,13 +47,12 @@ class PostgresUserAccessRegistry:
         """Открывает PostgreSQL-соединение с dict_row."""
 
         try:
-            import psycopg
             from psycopg.rows import dict_row
         except ImportError as exc:
             raise RuntimeError(
                 "PostgreSQL registry requires psycopg. Install dependencies from requirements.txt"
             ) from exc
-        return psycopg.connect(self._conninfo, row_factory=dict_row)
+        return connect_utf8(self._conninfo, row_factory=dict_row)
 
     @staticmethod
     def _normalize_role(role: str) -> str | None:
