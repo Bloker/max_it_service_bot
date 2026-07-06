@@ -105,6 +105,18 @@
 1. В логах видны ключевые события: создание заявки, смена статуса, отказ policy, ошибки network tools.
 2. Бот продолжает работу после неуспешных диагностических команд.
 
+## G1. Webhook mode
+1. В dev/test окружении выставить `MAX_UPDATE_MODE=webhook`.
+2. Проверить, что backend слушает только внутренний адрес `127.0.0.1:8080`.
+3. `GET /health` возвращает `200` и не содержит token/secret/DB password.
+4. `POST /max-webhook` без `X-Max-Bot-Api-Secret` при заданном secret возвращает `403`.
+5. `POST /max-webhook` с неверным secret возвращает `403`.
+6. `POST /max-webhook` с корректным secret и валидным JSON возвращает `200`.
+7. Невалидный JSON возвращает `400`.
+8. В логах webhook нет raw payload, token, password, private media URL.
+9. Long Polling и webhook subscription одновременно не использовать.
+10. Перед production switch Nginx `/max-webhook` должен быть переключен с `503` на `proxy_pass http://127.0.0.1:8080/max-webhook`.
+
 ## H. Audit/events/observability
 1. На test DB применена миграция `20260702_audit_events_observability.sql`.
 2. Создать новую заявку и проверить `helpdesk.ticket_events.event_type = ticket_created`.

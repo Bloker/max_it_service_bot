@@ -21,3 +21,6 @@ data/
 
 test_main.py
 docs/CODEX_PROJECT_CONTEXT_RU.md
+
+# Local operator secrets, never commit
+.local_secrets/

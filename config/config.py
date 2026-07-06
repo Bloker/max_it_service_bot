@@ -19,7 +19,7 @@ class LogsConfig:
 
 @dataclass(frozen=True)
 class BotConfig:
-    """Настройки MAX-бота и polling."""
+    """Настройки MAX-бота, polling и webhook."""
 
     token: str
     group_chat_id: int
@@ -31,6 +31,12 @@ class BotConfig:
     polling_limit: int
     polling_timeout_sec: int
     polling_min_interval_sec: float
+    update_mode: str = "longpoll"
+    webhook_host: str = "127.0.0.1"
+    webhook_port: int = 8080
+    webhook_path: str = "/max-webhook"
+    webhook_health_path: str = "/health"
+    webhook_secret: str = ""
 
 
 @dataclass(frozen=True)
@@ -254,6 +260,32 @@ def get_config() -> AppConfig:
     if polling_min_interval_sec < 0.5:
         raise RuntimeError("MAX_POLLING_MIN_INTERVAL_SEC must be >= 0.5")
 
+    update_mode = os.getenv("MAX_UPDATE_MODE", "longpoll").strip().lower()
+    if update_mode not in {"longpoll", "webhook"}:
+        raise RuntimeError("MAX_UPDATE_MODE must be 'longpoll' or 'webhook'")
+
+    webhook_host = os.getenv("MAX_WEBHOOK_HOST", "127.0.0.1").strip()
+    if not webhook_host:
+        raise RuntimeError("MAX_WEBHOOK_HOST must not be empty")
+
+    webhook_port_raw = os.getenv("MAX_WEBHOOK_PORT", "8080").strip()
+    try:
+        webhook_port = int(webhook_port_raw)
+    except ValueError as exc:
+        raise RuntimeError("MAX_WEBHOOK_PORT must be an integer") from exc
+    if not (1 <= webhook_port <= 65535):
+        raise RuntimeError("MAX_WEBHOOK_PORT must be between 1 and 65535")
+
+    webhook_path = os.getenv("MAX_WEBHOOK_PATH", "/max-webhook").strip()
+    webhook_health_path = os.getenv("MAX_WEBHOOK_HEALTH_PATH", "/health").strip()
+    if not webhook_path.startswith("/"):
+        raise RuntimeError("MAX_WEBHOOK_PATH must start with '/'")
+    if not webhook_health_path.startswith("/"):
+        raise RuntimeError("MAX_WEBHOOK_HEALTH_PATH must start with '/'")
+    if webhook_path == webhook_health_path:
+        raise RuntimeError("MAX_WEBHOOK_PATH and MAX_WEBHOOK_HEALTH_PATH must be different")
+    webhook_secret = os.getenv("MAX_WEBHOOK_SECRET", "").strip()
+
     ticket_backend = os.getenv("MAX_TICKET_BACKEND", "sqlite").strip().lower()
     if ticket_backend not in {"sqlite", "memory", "postgres"}:
         raise RuntimeError("MAX_TICKET_BACKEND must be 'sqlite', 'memory' or 'postgres'")
@@ -419,6 +451,12 @@ def get_config() -> AppConfig:
             polling_limit=polling_limit,
             polling_timeout_sec=polling_timeout_sec,
             polling_min_interval_sec=polling_min_interval_sec,
+            update_mode=update_mode,
+            webhook_host=webhook_host,
+            webhook_port=webhook_port,
+            webhook_path=webhook_path,
+            webhook_health_path=webhook_health_path,
+            webhook_secret=webhook_secret,
         ),
         logs=logs,
         tickets=TicketStorageConfig(

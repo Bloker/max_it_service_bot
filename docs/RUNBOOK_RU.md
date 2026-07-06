@@ -14,6 +14,13 @@
 - `MAX_GROUP_CHAT_ID` — chat_id группового чата специалистов.
 
 ## 3) Важные env-переменные
+- Режим получения событий MAX:
+  - `MAX_UPDATE_MODE` (`longpoll`/`webhook`, default `longpoll`)
+  - `MAX_WEBHOOK_HOST` (`127.0.0.1` для backend за Nginx)
+  - `MAX_WEBHOOK_PORT` (`8080`)
+  - `MAX_WEBHOOK_PATH` (`/max-webhook`)
+  - `MAX_WEBHOOK_HEALTH_PATH` (`/health`)
+  - `MAX_WEBHOOK_SECRET` — должен совпадать с secret в MAX subscription.
 - Роли:
   - `MAX_ADMIN_IDS`
   - `MAX_IT_SPECIALIST_IDS`
@@ -81,6 +88,41 @@
 См. детальный ручной список в docs/MANUAL_CHECKLIST_RU.md.
 
 Команда автопроверки: `python -m unittest discover -s tests -v`.
+
+## 9.1) Webhook mode
+
+Default-режимом остается Long Polling:
+
+```env
+MAX_UPDATE_MODE=longpoll
+```
+
+Для будущего контейнера за Nginx:
+
+```env
+MAX_UPDATE_MODE=webhook
+MAX_WEBHOOK_HOST=127.0.0.1
+MAX_WEBHOOK_PORT=8080
+MAX_WEBHOOK_PATH=/max-webhook
+MAX_WEBHOOK_HEALTH_PATH=/health
+MAX_WEBHOOK_SECRET=<secret>
+```
+
+Внешний URL после настройки Nginx:
+
+```text
+https://max.myservicedomain.ru/max-webhook
+  -> http://127.0.0.1:8080/max-webhook
+```
+
+`MAX_WEBHOOK_SECRET` проверяется по заголовку `X-Max-Bot-Api-Secret`.
+Long Polling и Webhook одновременно не использовать: при активной webhook
+subscription MAX не отдает события через polling.
+
+`maxapi==1.2.1` использует `https://platform-api2.max.ru` и отправляет токен
+через `Authorization` header. Если на сервере исходящие HTTPS-запросы к
+`platform-api2.max.ru` начнут падать с TLS/certificate verify error, проверить
+доверие к цепочке сертификатов MAX API / сертификату Минцифры на сервере.
 
 ## 10) Миграция в нормализованную PostgreSQL-схему
 1. Убедитесь, что выставлен backend:

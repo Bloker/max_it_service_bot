@@ -1,7 +1,6 @@
-"""Инициализация MAX Bot API, dispatcher и long polling."""
+"""Инициализация MAX Bot API, dispatcher, long polling и webhook."""
 
 import asyncio
-import json
 import logging
 from time import monotonic
 from typing import Any
@@ -105,17 +104,27 @@ def _normalize_voice_attachments(events: dict[str, Any] | None) -> dict[str, Any
 
 
 def _log_raw_update(update: dict[str, Any], update_type: str, *, reason: str) -> None:
-    """Логирует сырой update для отладки проблем парсинга maxapi."""
+    """Логирует безопасные признаки update без raw payload и private URL."""
 
-    try:
-        raw_json = json.dumps(update, ensure_ascii=False, default=str)[:5000]
-    except Exception:
-        raw_json = str(update)[:3000]
+    message = update.get("message")
+    body = message.get("body") if isinstance(message, dict) else None
+    attachments = body.get("attachments") if isinstance(body, dict) else None
+    attachment_types = []
+    if isinstance(attachments, list):
+        attachment_types = [
+            attachment.get("type")
+            for attachment in attachments
+            if isinstance(attachment, dict)
+        ]
     logger.warning(
-        "Raw update debug: update_type=%s reason=%s raw=%s",
+        "Raw update debug: update_type=%s reason=%s fields=%s "
+        "has_message=%s has_attachments=%s attachment_types=%s",
         update_type,
         reason,
-        raw_json,
+        sorted(update.keys()),
+        isinstance(message, dict),
+        bool(attachments) if isinstance(attachments, list) else False,
+        attachment_types,
     )
 
 
@@ -153,17 +162,31 @@ def configure_long_polling_limits(bot: Bot, cfg: BotConfig) -> None:
 
 
 async def main() -> None:
-    """Создает бота, настраивает polling и запускает обработку событий."""
+    """Создает бота, регистрирует handlers и запускает выбранный режим."""
 
     cfg = get_config()
 
     bot = Bot(token=cfg.bot.token)
-    configure_long_polling_limits(bot, cfg.bot)
     dp = Dispatcher()
 
     register_routes(dp)
 
-    logger.info("Бот запускается...")
+    logger.info("Бот запускается: update_mode=%s", cfg.bot.update_mode)
+
+    if cfg.bot.update_mode == "webhook":
+        from app.bot.webhook_server import run_webhook_server
+
+        logger.info(
+            "Бот запущен в webhook-mode: host=%s port=%s path=%s health_path=%s",
+            cfg.bot.webhook_host,
+            cfg.bot.webhook_port,
+            cfg.bot.webhook_path,
+            cfg.bot.webhook_health_path,
+        )
+        await run_webhook_server(cfg=cfg.bot, dispatcher=dp, bot=bot)
+        return
+
+    configure_long_polling_limits(bot, cfg.bot)
 
     try:
         await bot.delete_webhook()
