@@ -1,4 +1,6 @@
 from pathlib import Path
+import argparse
+import os
 import sys
 
 import psycopg
@@ -11,11 +13,19 @@ from config.config import get_config
 
 
 def main() -> None:
+    args = _parse_args()
+    if args.db:
+        os.environ["MAX_TICKET_PG_DB"] = args.db
+
     cfg = get_config()
     if cfg.tickets.backend != "postgres":
         raise RuntimeError("Set MAX_TICKET_BACKEND=postgres before applying PostgreSQL migrations")
 
-    migration_path = ROOT_DIR / "db" / "migrations" / "20260407_normalized_schema.sql"
+    migration_path = Path(args.migration_path)
+    if not migration_path.is_absolute():
+        migration_path = ROOT_DIR / migration_path
+    if not migration_path.exists():
+        migration_path = ROOT_DIR / "db" / "migrations" / args.migration_path
     sql = migration_path.read_text(encoding="utf-8")
     conninfo = (
         f"host={cfg.tickets.postgres_host} "
@@ -33,6 +43,18 @@ def main() -> None:
         conn.commit()
 
     print(f"Migration applied: {migration_path.name}")
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Apply a PostgreSQL SQL migration")
+    parser.add_argument(
+        "migration_path",
+        nargs="?",
+        default="db/migrations/20260407_normalized_schema.sql",
+        help="Migration path relative to repository root, or migration filename",
+    )
+    parser.add_argument("--db", help="Override MAX_TICKET_PG_DB")
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
