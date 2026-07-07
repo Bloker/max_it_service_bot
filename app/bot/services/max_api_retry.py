@@ -10,6 +10,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
+from app.observability.services import ObservabilityService
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -111,6 +113,9 @@ async def call_max_api_with_retry(
     config: MaxApiRetryConfig | None = None,
     retry_network_errors: bool = False,
     max_attempts: int | None = None,
+    observability: ObservabilityService | None = None,
+    idempotency: str | None = None,
+    message_key_present: bool | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     jitter: Callable[[], float] = random.random,
 ) -> T:
@@ -128,6 +133,19 @@ async def call_max_api_with_retry(
             if info.server_error and not info.rate_limited:
                 attempts_limit = min(attempts_limit, settings.server_error_attempts)
             if not retryable:
+                await _record_max_api_event(
+                    observability,
+                    action="max_api_transient_error" if info.transient else "max_api_permanent_error",
+                    operation_name=operation_name,
+                    info=info,
+                    attempt=attempt,
+                    max_attempts=attempts_limit,
+                    next_delay_sec=None,
+                    retry_exhausted=False,
+                    idempotency=idempotency,
+                    message_key_present=message_key_present,
+                    result="failed",
+                )
                 raise
             if attempt >= attempts_limit:
                 logger.warning(
@@ -136,6 +154,19 @@ async def call_max_api_with_retry(
                     info.status_code,
                     info.code,
                     attempt,
+                )
+                await _record_max_api_event(
+                    observability,
+                    action="max_api_retry_exhausted",
+                    operation_name=operation_name,
+                    info=info,
+                    attempt=attempt,
+                    max_attempts=attempts_limit,
+                    next_delay_sec=None,
+                    retry_exhausted=True,
+                    idempotency=idempotency,
+                    message_key_present=message_key_present,
+                    result="failed",
                 )
                 raise MaxApiRetryExhausted(operation_name, attempt, info) from exc
             delay = _calculate_delay(settings, attempt, info, jitter)
@@ -146,6 +177,46 @@ async def call_max_api_with_retry(
                 info.code,
                 attempt,
                 delay,
+            )
+            if info.rate_limited:
+                await _record_max_api_event(
+                    observability,
+                    action="max_api_rate_limited",
+                    operation_name=operation_name,
+                    info=info,
+                    attempt=attempt,
+                    max_attempts=attempts_limit,
+                    next_delay_sec=delay,
+                    retry_exhausted=False,
+                    idempotency=idempotency,
+                    message_key_present=message_key_present,
+                    result="retrying",
+                )
+            await _record_max_api_event(
+                observability,
+                action="max_api_transient_error",
+                operation_name=operation_name,
+                info=info,
+                attempt=attempt,
+                max_attempts=attempts_limit,
+                next_delay_sec=delay,
+                retry_exhausted=False,
+                idempotency=idempotency,
+                message_key_present=message_key_present,
+                result="retrying",
+            )
+            await _record_max_api_event(
+                observability,
+                action="max_api_retry",
+                operation_name=operation_name,
+                info=info,
+                attempt=attempt,
+                max_attempts=attempts_limit,
+                next_delay_sec=delay,
+                retry_exhausted=False,
+                idempotency=idempotency,
+                message_key_present=message_key_present,
+                result="retrying",
             )
             await sleep(delay)
             attempt += 1
@@ -251,3 +322,60 @@ def _is_network_error(exc: BaseException) -> bool:
         module.startswith("aiohttp")
         and any(marker in name for marker in ("timeout", "connector", "clientconnection"))
     )
+
+
+async def _record_max_api_event(
+    observability: ObservabilityService | None,
+    *,
+    action: str,
+    operation_name: str,
+    info: MaxApiErrorInfo,
+    attempt: int,
+    max_attempts: int,
+    next_delay_sec: float | None,
+    retry_exhausted: bool,
+    idempotency: str | None,
+    message_key_present: bool | None,
+    result: str,
+) -> None:
+    """Пишет безопасный audit MAX API retry/rate-limit события."""
+
+    if observability is None:
+        return
+    metadata = {
+        "operation": operation_name,
+        "status": info.status_code,
+        "code": info.code,
+        "classification": _classification(info),
+        "attempt": attempt,
+        "max_attempts": max_attempts,
+        "next_delay_sec": round(next_delay_sec, 3) if next_delay_sec is not None else None,
+        "retry_exhausted": retry_exhausted,
+        "idempotency": idempotency or operation_name,
+        "message_key_present": message_key_present,
+    }
+    try:
+        await observability.audit(
+            action=action,
+            resource_type="max_api",
+            resource_id=operation_name,
+            result=result,
+            reason=metadata["classification"],
+            metadata=metadata,
+        )
+    except Exception:
+        logger.warning(
+            "MAX API observability write failed: action=%s operation=%s",
+            action,
+            operation_name,
+        )
+
+
+def _classification(info: MaxApiErrorInfo) -> str:
+    if info.rate_limited:
+        return "rate_limited"
+    if info.server_error:
+        return "server_error"
+    if info.network_error:
+        return "network_transient"
+    return "permanent"

@@ -1,4 +1,5 @@
 import unittest
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -6,7 +7,9 @@ from app.network.netarium.guest_parser import parse_guest_stays, parse_room_numb
 from app.network.netarium.models import NetariumGuestSearchResult
 from app.network.netarium.guest_service import NetariumGuestService
 from app.network.netarium.guest_texts import render_guest_search_result
+from app.observability.services import ObservabilityService
 from config.config import NetariumConfig
+from tests.test_observability_service import FakeObservabilityRepository
 
 
 _OBJECTS = [
@@ -55,6 +58,11 @@ class _FakeNetariumClient:
         return self.objects
 
 
+class _FailingNetariumClient:
+    async def fetch_objects(self):
+        raise TimeoutError("request timeout")
+
+
 def _netarium_config() -> NetariumConfig:
     return NetariumConfig(
         base_url="http://192.168.2.34:8081",
@@ -83,18 +91,43 @@ class NetariumGuestTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_find_by_room_returns_guest_stay(self) -> None:
         client = _FakeNetariumClient(_OBJECTS)
-        service = NetariumGuestService(_netarium_config(), client=client)
+        repository = FakeObservabilityRepository()
+        service = NetariumGuestService(
+            _netarium_config(),
+            client=client,
+            observability=ObservabilityService(repository=repository),
+        )
 
-        result = await service.find_by_room("103")
+        result = await service.find_by_room(
+            "103",
+            actor_user_id=1001,
+            actor_name="Admin",
+            chat_type="dialog",
+        )
 
         self.assertTrue(result.ok)
         self.assertIsNotNone(result.stay)
         self.assertEqual(result.stay.guest_name, "АШОТ ОБАЯН")
         self.assertEqual(client.calls, 1)
+        run = repository.network_runs[0]
+        self.assertEqual(run.tool, "netarium_room_lookup")
+        self.assertEqual(run.status, "success")
+        self.assertEqual(run.actor_user_id, 1001)
+        self.assertTrue(run.metadata["room_found"])
+        self.assertTrue(run.metadata["guest_found"])
+        self.assertTrue(run.metadata["has_start_end_dates"])
+        serialized = json.dumps(run.metadata, ensure_ascii=False)
+        self.assertNotIn("999999", serialized)
+        self.assertNotIn("АШОТ", serialized)
 
     async def test_find_by_room_returns_existing_room_without_guest_stay(self) -> None:
         client = _FakeNetariumClient(_OBJECTS)
-        service = NetariumGuestService(_netarium_config(), client=client)
+        repository = FakeObservabilityRepository()
+        service = NetariumGuestService(
+            _netarium_config(),
+            client=client,
+            observability=ObservabilityService(repository=repository),
+        )
 
         result = await service.find_by_room("421")
 
@@ -102,10 +135,19 @@ class NetariumGuestTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.room_exists)
         self.assertIsNone(result.stay)
         self.assertEqual(client.calls, 1)
+        run = repository.network_runs[0]
+        self.assertEqual(run.status, "success")
+        self.assertTrue(run.metadata["room_found"])
+        self.assertFalse(run.metadata["guest_found"])
 
     async def test_find_by_room_returns_empty_result_for_unknown_room(self) -> None:
         client = _FakeNetariumClient(_OBJECTS)
-        service = NetariumGuestService(_netarium_config(), client=client)
+        repository = FakeObservabilityRepository()
+        service = NetariumGuestService(
+            _netarium_config(),
+            client=client,
+            observability=ObservabilityService(repository=repository),
+        )
 
         result = await service.find_by_room("32323")
 
@@ -113,6 +155,24 @@ class NetariumGuestTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.room_exists)
         self.assertIsNone(result.stay)
         self.assertEqual(client.calls, 1)
+        run = repository.network_runs[0]
+        self.assertEqual(run.status, "not_found")
+        self.assertFalse(run.metadata["room_found"])
+
+    async def test_observability_records_external_timeout(self) -> None:
+        repository = FakeObservabilityRepository()
+        service = NetariumGuestService(
+            _netarium_config(),
+            client=_FailingNetariumClient(),
+            observability=ObservabilityService(repository=repository),
+        )
+
+        result = await service.find_by_room("103")
+
+        self.assertFalse(result.ok)
+        run = repository.network_runs[0]
+        self.assertEqual(run.status, "timeout")
+        self.assertEqual(run.metadata["api_status"], "timeout")
 
     def test_render_guest_search_result(self) -> None:
         stay = parse_guest_stays(_OBJECTS)[1]

@@ -86,6 +86,9 @@ class MaxMessageService:
                 ),
                 config=self._retry_config,
                 retry_network_errors=True,
+                observability=self._observability,
+                idempotency="edit",
+                message_key_present=True,
                 sleep=self._sleep,
             )
         except Exception as exc:
@@ -140,6 +143,9 @@ class MaxMessageService:
                     ),
                     config=self._retry_config,
                     retry_network_errors=False,
+                    observability=self._observability,
+                    idempotency="send",
+                    message_key_present=False,
                     sleep=self._sleep,
                 )
             else:
@@ -155,6 +161,9 @@ class MaxMessageService:
                     ),
                     config=self._retry_config,
                     retry_network_errors=False,
+                    observability=self._observability,
+                    idempotency="send",
+                    message_key_present=False,
                     sleep=self._sleep,
                 )
         except Exception as exc:
@@ -195,6 +204,9 @@ class MaxMessageService:
                 lambda: bot.delete_message(message_id=str(message_id)),
                 config=self._retry_config,
                 retry_network_errors=True,
+                observability=self._observability,
+                idempotency="delete",
+                message_key_present=True,
                 sleep=self._sleep,
             )
         except Exception as exc:
@@ -221,6 +233,9 @@ class MaxMessageService:
                 lambda: event.answer(notification=notification),
                 config=self._retry_config,
                 retry_network_errors=True,
+                observability=self._observability,
+                idempotency="callback",
+                message_key_present=False,
                 sleep=self._sleep,
             )
         except Exception as exc:
@@ -303,6 +318,9 @@ class MaxMessageService:
                 ),
                 config=self._retry_config,
                 retry_network_errors=True,
+                observability=self._observability,
+                idempotency="callback",
+                message_key_present=message_id is not None,
                 sleep=self._sleep,
             )
         except Exception as exc:
@@ -360,6 +378,18 @@ class MaxMessageService:
                 "MAX edit_message rate limited locally: message_id=%s delay=%.3f",
                 message_id,
                 wait_for,
+            )
+            await self._audit_max_message(
+                action="max_api_edit_rate_limited",
+                resource_id=message_id,
+                result="delayed",
+                metadata={
+                    "operation": "edit_message",
+                    "classification": "local_rate_limited",
+                    "next_delay_sec": round(wait_for, 3),
+                    "idempotency": "edit",
+                    "message_key_present": True,
+                },
             )
             await self._sleep(wait_for)
 

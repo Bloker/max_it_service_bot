@@ -58,12 +58,12 @@ class ObservabilityService:
         )
         try:
             self._repository.record_ticket_event(record)
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "Ticket event write failed: ticket_id=%s event_type=%s",
+                "Ticket event write failed: ticket_id=%s event_type=%s error=%s",
                 ticket_id,
                 event_type,
-                exc_info=True,
+                exc.__class__.__name__,
             )
 
     async def audit(
@@ -94,13 +94,13 @@ class ObservabilityService:
         )
         try:
             self._repository.record_audit(record)
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "Audit write failed: action=%s resource_type=%s resource_id=%s",
+                "Audit write failed: action=%s resource_type=%s resource_id=%s error=%s",
                 action,
                 resource_type,
                 resource_id,
-                exc_info=True,
+                exc.__class__.__name__,
             )
 
     async def network_tool_run(
@@ -146,12 +146,12 @@ class ObservabilityService:
         )
         try:
             self._repository.record_network_tool_run(record)
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "Network tool run write failed: tool=%s status=%s",
+                "Network tool run write failed: tool=%s status=%s error=%s",
                 tool,
                 status,
-                exc_info=True,
+                exc.__class__.__name__,
             )
 
 

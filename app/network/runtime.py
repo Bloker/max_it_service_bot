@@ -57,7 +57,10 @@ def get_wifi_voucher_service() -> WifiVoucherService:
 
     global _wifi_voucher_service
     if _wifi_voucher_service is None:
-        _wifi_voucher_service = WifiVoucherService(get_config().wifi_link)
+        _wifi_voucher_service = WifiVoucherService(
+            get_config().wifi_link,
+            observability=get_observability_service(),
+        )
     return _wifi_voucher_service
 
 
@@ -66,5 +69,8 @@ def get_netarium_guest_service() -> NetariumGuestService:
 
     global _netarium_guest_service
     if _netarium_guest_service is None:
-        _netarium_guest_service = NetariumGuestService(get_config().netarium)
+        _netarium_guest_service = NetariumGuestService(
+            get_config().netarium,
+            observability=get_observability_service(),
+        )
     return _netarium_guest_service

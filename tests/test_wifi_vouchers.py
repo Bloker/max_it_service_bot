@@ -1,11 +1,14 @@
 import unittest
+import json
 from datetime import date
 
 from app.network.wifi.models import WifiVoucherSearchResult
 from app.network.wifi.voucher_parser import parse_wifi_vouchers
 from app.network.wifi.voucher_service import WifiVoucherService
 from app.network.wifi.voucher_texts import render_voucher_search_result
+from app.observability.services import ObservabilityService
 from config.config import WifiLinkConfig
+from tests.test_observability_service import FakeObservabilityRepository
 
 
 _HTML = """
@@ -62,6 +65,11 @@ class _FakeWifiLinkClient:
         return collected
 
 
+class _FailingWifiLinkClient:
+    async def fetch_voucher_pages_until(self, predicate):
+        raise TimeoutError("request timeout")
+
+
 def _wifi_config() -> WifiLinkConfig:
     return WifiLinkConfig(
         base_url="https://lk.wi-fi.link",
@@ -101,15 +109,37 @@ class WifiVoucherTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_find_first_by_room_returns_first_matching_room_ignoring_date(self) -> None:
         client = _FakeWifiLinkClient([_HTML])
-        service = WifiVoucherService(_wifi_config(), client=client)
+        repository = FakeObservabilityRepository()
+        service = WifiVoucherService(
+            _wifi_config(),
+            client=client,
+            observability=ObservabilityService(repository=repository),
+        )
 
-        result = await service.find_first_by_room("2116")
+        result = await service.find_first_by_room(
+            "2116",
+            actor_user_id=1001,
+            actor_name="Admin",
+            chat_type="dialog",
+            room_exists_in_netarium=True,
+            guest_found_in_netarium=True,
+        )
 
         self.assertTrue(result.ok)
         self.assertEqual(result.room, "2116")
         self.assertEqual(len(result.vouchers), 1)
         self.assertEqual(result.vouchers[0].guest, "sukhin")
         self.assertEqual(client.until_calls, 1)
+        run = repository.network_runs[0]
+        self.assertEqual(run.tool, "wifi_voucher_lookup")
+        self.assertEqual(run.status, "success")
+        self.assertEqual(run.actor_user_id, 1001)
+        self.assertTrue(run.metadata["voucher_found"])
+        self.assertEqual(run.metadata["pages_scanned"], 1)
+        self.assertEqual(run.metadata["login_masked"], "***:2116:***")
+        serialized = json.dumps(run.metadata, ensure_ascii=False)
+        self.assertNotIn("secret-password", serialized)
+        self.assertNotIn(_HTML, serialized)
 
     async def test_find_first_by_room_returns_first_match_from_newest_order(self) -> None:
         html = _HTML.replace("12.05.26", "10.05.26", 1)
@@ -160,12 +190,19 @@ class WifiVoucherTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_find_first_by_room_uses_cache(self) -> None:
         client = _FakeWifiLinkClient([_HTML])
-        service = WifiVoucherService(_wifi_config(), client=client)
+        repository = FakeObservabilityRepository()
+        service = WifiVoucherService(
+            _wifi_config(),
+            client=client,
+            observability=ObservabilityService(repository=repository),
+        )
 
         await service.find_first_by_room("2116")
         await service.find_first_by_room("325")
 
         self.assertEqual(client.until_calls, 1)
+        self.assertTrue(repository.network_runs[-1].metadata["cache_hit"])
+        self.assertTrue(repository.network_runs[-1].metadata["cache_partial"])
 
     async def test_find_first_by_room_refetches_when_partial_cache_misses_room(self) -> None:
         page_with_first_room = _HTML.replace("2116", "101").replace("sukhin", "koltsova")
@@ -181,6 +218,39 @@ class WifiVoucherTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(second_result.ok)
         self.assertEqual(second_result.vouchers[0].guest, "matyushkina")
         self.assertEqual(client.until_calls, 2)
+        self.assertTrue(service._cached_vouchers)
+
+    async def test_observability_records_not_found(self) -> None:
+        client = _FakeWifiLinkClient([_HTML])
+        repository = FakeObservabilityRepository()
+        service = WifiVoucherService(
+            _wifi_config(),
+            client=client,
+            observability=ObservabilityService(repository=repository),
+        )
+
+        result = await service.find_first_by_room("9999")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.vouchers, ())
+        run = repository.network_runs[0]
+        self.assertEqual(run.status, "not_found")
+        self.assertFalse(run.metadata["voucher_found"])
+
+    async def test_observability_records_external_timeout(self) -> None:
+        repository = FakeObservabilityRepository()
+        service = WifiVoucherService(
+            _wifi_config(),
+            client=_FailingWifiLinkClient(),
+            observability=ObservabilityService(repository=repository),
+        )
+
+        result = await service.find_first_by_room("2116")
+
+        self.assertFalse(result.ok)
+        run = repository.network_runs[0]
+        self.assertEqual(run.status, "timeout")
+        self.assertEqual(run.metadata["external_status"], "timeout")
 
     def test_render_voucher_search_result_hides_password_and_remaining_values(self) -> None:
         voucher = parse_wifi_vouchers(_HTML)[0]

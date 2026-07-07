@@ -98,7 +98,12 @@ def register(dp) -> None:
             logger.info("WiFi voucher room received: user_id=%s room=%s", actor_id, text)
             # Проверка комнаты в Netarium защищает от долгого обхода WiFi.link
             # при явной ошибке в номере.
-            guest_result = await netarium_guests.find_by_room(text)
+            guest_result = await netarium_guests.find_by_room(
+                text,
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+                chat_type=event.message.recipient.chat_type,
+            )
             if not guest_result.ok:
                 await event.message.answer(
                     text=render_guest_search_result(guest_result),
@@ -114,7 +119,14 @@ def register(dp) -> None:
                 return
 
             # Состояние не сбрасываем: администратор может вводить комнаты подряд.
-            result = await wifi_vouchers.find_first_by_room(text)
+            result = await wifi_vouchers.find_first_by_room(
+                text,
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+                chat_type=event.message.recipient.chat_type,
+                room_exists_in_netarium=guest_result.room_exists,
+                guest_found_in_netarium=guest_result.stay is not None,
+            )
             await event.message.answer(
                 text=render_voucher_search_result(result),
                 format=ParseMode.HTML,

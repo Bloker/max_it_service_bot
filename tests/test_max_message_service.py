@@ -5,6 +5,8 @@ from maxapi.enums.parse_mode import ParseMode
 
 from app.bot.services.max_api_retry import MaxApiRetryConfig
 from app.bot.services.max_message_service import MaxMessageService
+from app.observability.services import ObservabilityService
+from tests.test_observability_service import FakeObservabilityRepository
 
 
 class FakeCallbackEvent:
@@ -116,7 +118,9 @@ class MaxMessageServiceTests(unittest.IsolatedAsyncioTestCase):
         bot = FakeBot()
         sleeps: list[float] = []
         now = _FakeClock()
+        repository = FakeObservabilityRepository()
         service = MaxMessageService(
+            observability=ObservabilityService(repository=repository),
             retry_config=MaxApiRetryConfig(edit_min_interval_sec=1.0),
             sleep=_fake_sleep(sleeps),
             monotonic=now,
@@ -128,6 +132,11 @@ class MaxMessageServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(bot.edit_calls), 2)
         self.assertEqual(sleeps, [0.75])
+        self.assertEqual(repository.audit_records[-1].action, "max_message_edit_success")
+        self.assertIn(
+            "max_api_edit_rate_limited",
+            [record.action for record in repository.audit_records],
+        )
 
     async def test_edit_message_rate_limiter_does_not_wait_for_different_message(self) -> None:
         bot = FakeBot()

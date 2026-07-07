@@ -1915,7 +1915,12 @@ def register(dp) -> None:
                     logger.info("WiFi voucher room received: user_id=%s room=%s", sender_id, text)
                     # Сначала проверяем номер в Netarium, чтобы не запускать
                     # долгий поиск по страницам WiFi.link для несуществующей комнаты.
-                    guest_result = await netarium_guests.find_by_room(text)
+                    guest_result = await netarium_guests.find_by_room(
+                        text,
+                        actor_user_id=sender_id,
+                        actor_name=sender_name,
+                        chat_type=event.message.recipient.chat_type,
+                    )
                     if not guest_result.ok:
                         await event.message.answer(
                             text=render_guest_search_result(guest_result),
@@ -1932,7 +1937,14 @@ def register(dp) -> None:
 
                     # WiFi-сценарий остается активным после ответа: следующий
                     # текст пользователя снова считается номером комнаты.
-                    result = await wifi_vouchers.find_first_by_room(text)
+                    result = await wifi_vouchers.find_first_by_room(
+                        text,
+                        actor_user_id=sender_id,
+                        actor_name=sender_name,
+                        chat_type=event.message.recipient.chat_type,
+                        room_exists_in_netarium=guest_result.room_exists,
+                        guest_found_in_netarium=guest_result.stay is not None,
+                    )
                     await event.message.answer(
                         text=render_voucher_search_result(result),
                         format=ParseMode.HTML,
