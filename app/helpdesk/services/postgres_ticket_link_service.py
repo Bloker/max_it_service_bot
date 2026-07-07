@@ -2,7 +2,7 @@
 
 import threading
 
-from app.infrastructure.database.psycopg_connection import connect_utf8
+from app.infrastructure.database.psycopg_connection import connect_postgres
 
 
 class PostgresTicketLinkService:
@@ -33,7 +33,7 @@ class PostgresTicketLinkService:
             raise RuntimeError(
                 "PostgreSQL ticket link service requires psycopg. Install dependencies from requirements.txt"
             ) from exc
-        return connect_utf8(self._conninfo, row_factory=dict_row)
+        return connect_postgres(self._conninfo, row_factory=dict_row)
 
     def _ensure_initialized(self) -> None:
         if self._initialized:

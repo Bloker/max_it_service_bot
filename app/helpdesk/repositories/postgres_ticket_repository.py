@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Iterable
 from datetime import datetime, timezone
 
-from app.infrastructure.database.psycopg_connection import connect_utf8
+from app.infrastructure.database.psycopg_connection import connect_postgres
 from app.helpdesk.models.ticket import Ticket, TicketStatus
 from app.helpdesk.repositories.types import TicketActionResult
 
@@ -37,7 +37,7 @@ class PostgresTicketRepository:
             raise RuntimeError(
                 "PostgreSQL backend requires psycopg. Install dependencies from requirements.txt"
             ) from exc
-        return connect_utf8(self._conninfo, row_factory=dict_row)
+        return connect_postgres(self._conninfo, row_factory=dict_row)
 
     async def _ensure_initialized(self) -> None:
         """Лениво создает таблицу заявок и индексы."""

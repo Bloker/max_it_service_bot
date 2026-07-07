@@ -4,7 +4,7 @@ import json
 import threading
 from typing import Any
 
-from app.infrastructure.database.psycopg_connection import connect_utf8
+from app.infrastructure.database.psycopg_connection import connect_postgres
 from app.observability.models import AuditRecord, NetworkToolRunRecord, TicketEventRecord
 
 
@@ -29,7 +29,7 @@ class PostgresObservabilityRepository:
         self._lock = threading.Lock()
 
     def _connect(self):
-        return connect_utf8(self._conninfo)
+        return connect_postgres(self._conninfo)
 
     def _resolve_ticket_pk(self, cur, ticket_key: str) -> int | None:
         cur.execute(
