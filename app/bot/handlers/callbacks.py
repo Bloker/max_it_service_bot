@@ -29,6 +29,7 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_clarification_cancel_keyboard,
     build_close_reply_cancel_keyboard,
     build_categories_keyboard,
+    build_jamaica_main_menu_keyboard,
     build_main_menu_keyboard,
     build_open_tickets_keyboard,
     build_ticket_actions_keyboard,
@@ -46,9 +47,11 @@ from app.helpdesk.payloads import (
     SpecialistTicketPayload,
     UserMenuPayload,
 )
+from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.runtime import (
     get_clarification_session_service,
     get_close_reply_session_service,
+    get_room_ticket_context_service,
     get_ticket_clarification_service,
     get_ticket_link_service,
     get_ticket_service,
@@ -125,14 +128,23 @@ def _build_open_tickets_text(items) -> str:
     return specialist_texts.render_open_tickets_list(items, title="Не закрытые заявки")
 
 
-async def _send_ticket_card_from_list(event: MessageCallback, ticket, ticket_links) -> None:
+async def _send_ticket_card_from_list(
+    event: MessageCallback,
+    ticket,
+    ticket_links,
+    room_contexts=None,
+) -> None:
     """Отправляет карточку заявки, по возможности reply к исходному сообщению."""
 
     group_message_id = ticket_links.get_group_message_id(ticket.ticket_id)
+    room_context = room_contexts.get_context(ticket.ticket_id) if room_contexts else None
     if group_message_id:
         try:
             await event.message.answer(
-                text=specialist_texts.render_group_ticket(ticket),
+                text=specialist_texts.render_group_ticket(
+                    ticket,
+                    room_context=room_context,
+                ),
                 attachments=[build_ticket_actions_keyboard(ticket)],
                 link=NewMessageLink(type=MessageLinkType.REPLY, mid=group_message_id),
                 format=ParseMode.HTML,
@@ -146,7 +158,7 @@ async def _send_ticket_card_from_list(event: MessageCallback, ticket, ticket_lin
             )
 
     await event.message.answer(
-        text=specialist_texts.render_group_ticket(ticket),
+        text=specialist_texts.render_group_ticket(ticket, room_context=room_context),
         attachments=[build_ticket_actions_keyboard(ticket)],
         format=ParseMode.HTML,
     )
@@ -200,6 +212,8 @@ def _build_menu_for_user(user_id: int, cfg, access_registry):
     hotel_code = access_registry.get_user_hotel(user_id)
     hotel_features = set(access_registry.get_hotel_features(hotel_code))
     is_service_actor = can_view_service
+    if not is_service_actor and hotel_code == "jamaica":
+        return build_jamaica_main_menu_keyboard()
     return build_main_menu_keyboard(
         can_create_ticket=True,
         can_view_my_tickets=True,
@@ -250,6 +264,7 @@ def register(dp) -> None:
     close_reply_sessions = get_close_reply_session_service()
     ticket_clarifications = get_ticket_clarification_service()
     user_reply_sessions = get_user_reply_session_service()
+    room_ticket_contexts = get_room_ticket_context_service()
     observability = get_observability_service()
     max_messages = MaxMessageService(observability=observability, retry_config=cfg.max_api)
     ticket_card_updates = TicketCardUpdateService(
@@ -257,6 +272,7 @@ def register(dp) -> None:
         group_chat_id=cfg.bot.group_chat_id,
         max_messages=max_messages,
         clarifications=ticket_clarifications,
+        room_contexts=room_ticket_contexts,
         observability=observability,
     )
     network_session = get_network_session_service()
@@ -296,6 +312,83 @@ def register(dp) -> None:
             attachments=[build_tv_escalation_keyboard()],
         )
         await event.answer(notification="Опишите проблему TV для поддержки")
+
+    async def _start_jamaica_room_ticket(event: MessageCallback, user_id: int) -> None:
+        """Запускает ввод номера для пользователя Jamaica."""
+
+        if room_ticket_contexts is None:
+            await event.answer(notification="Справочник номеров недоступен")
+            return
+        hotel = room_ticket_contexts.find_user_hotel(user_id)
+        if hotel is None or hotel.code != "jamaica":
+            await event.answer(notification="Раздел недоступен для вашего профиля")
+            return
+        user_flow.begin_room_ticket(
+            user_id,
+            hotel_id=hotel.id,
+            hotel_code=hotel.code,
+        )
+        await event.message.answer(
+            text="Введите номер комнаты или домика.",
+            attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+        )
+        await event.answer(notification="Введите номер")
+
+    async def _start_jamaica_other_ticket(event: MessageCallback, user_id: int) -> None:
+        """Запускает заявку 'Прочее' без привязки к номеру."""
+
+        if room_ticket_contexts is None:
+            await event.answer(notification="Справочник номеров недоступен")
+            return
+        hotel = room_ticket_contexts.find_user_hotel(user_id)
+        if hotel is None or hotel.code != "jamaica":
+            await event.answer(notification="Раздел недоступен для вашего профиля")
+            return
+        category = room_ticket_contexts.find_other_category(hotel.id)
+        if category is None:
+            await event.answer(notification="Категория Прочее не настроена")
+            return
+        user_flow.begin_room_ticket_other(
+            user_id,
+            hotel_id=hotel.id,
+            hotel_code=hotel.code,
+            category_id=category.id,
+            category_code=category.code,
+            category_title=category.title,
+        )
+        await event.message.answer(
+            text=(
+                "Опишите проблему. Можно отправить несколько сообщений "
+                "и фото/файл.\nЧерез 20 секунд после последнего сообщения "
+                "обращение отправится автоматически."
+            ),
+            attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+        )
+        await event.answer(notification="Опишите проблему")
+
+    def _save_room_ticket_context(ticket_id: str, draft):
+        """Сохраняет hotel-specific контекст заявки из callback-flow."""
+
+        if room_ticket_contexts is None or not draft.is_room_ticket_flow:
+            return None
+        if not draft.hotel_id:
+            return None
+        return room_ticket_contexts.save_context(
+            RoomTicketContext(
+                ticket_key=ticket_id,
+                hotel_id=draft.hotel_id,
+                location_id=draft.location_id,
+                issue_category_id=draft.issue_category_id,
+                room_number_snapshot=draft.room_number,
+                location_display_snapshot=draft.location_display,
+                category_snapshot=draft.issue_category_title or draft.category,
+                metadata={
+                    "source": "jamaica_room_ticket_flow",
+                    "hotel_code": draft.hotel_code,
+                    "category_code": draft.issue_category_code,
+                },
+            )
+        )
 
     async def _safe_answer(event: MessageCallback, notification: str) -> None:
         await max_messages.answer_callback(event=event, notification=notification)
@@ -361,6 +454,47 @@ def register(dp) -> None:
                 attachments=[build_network_menu_keyboard()],
             )
             await event.answer(notification="Сетевое меню")
+            return
+
+        if action in {"jamaica_room", "jamaica_room_retry"}:
+            await _start_jamaica_room_ticket(event, user_id)
+            return
+
+        if action == "jamaica_other":
+            await _start_jamaica_other_ticket(event, user_id)
+            return
+
+        if action == "jamaica_cat":
+            if room_ticket_contexts is None:
+                await event.answer(notification="Справочник номеров недоступен")
+                return
+            draft = user_flow.get(user_id)
+            if draft.step != "awaiting_room_issue_category" or not draft.hotel_id:
+                await event.answer(notification="Сначала введите номер")
+                return
+            category = None
+            for item in room_ticket_contexts.list_location_categories(draft.hotel_id):
+                if item.code == payload.value:
+                    category = item
+                    break
+            if category is None:
+                await event.answer(notification="Категория не найдена")
+                return
+            user_flow.set_room_ticket_category(
+                user_id,
+                category_id=category.id,
+                category_code=category.code,
+                category_title=category.title,
+            )
+            await event.message.answer(
+                text=(
+                    "Опишите проблему. Можно отправить несколько сообщений "
+                    "и фото/файл.\nЧерез 20 секунд после последнего сообщения "
+                    "обращение отправится автоматически."
+                ),
+                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+            )
+            await event.answer(notification="Опишите проблему")
             return
 
         if action == "service_help":
@@ -987,9 +1121,13 @@ def register(dp) -> None:
                     user_id,
                     draft.category,
                 )
+                room_context = _save_room_ticket_context(ticket.ticket_id, draft)
 
                 group_sent = None
-                ticket_text = specialist_texts.render_group_ticket(ticket)
+                ticket_text = specialist_texts.render_group_ticket(
+                    ticket,
+                    room_context=room_context,
+                )
                 action_keyboard = build_ticket_actions_keyboard(ticket)
                 media_attachments = list(draft.attachments or [])
                 try:
@@ -1246,7 +1384,12 @@ def register(dp) -> None:
             if ticket is None:
                 await event.answer(notification=specialist_texts.NOT_FOUND_TEXT)
                 return
-            await _send_ticket_card_from_list(event, ticket, ticket_links)
+            await _send_ticket_card_from_list(
+                event,
+                ticket,
+                ticket_links,
+                room_ticket_contexts,
+            )
             await event.answer(notification=f"Открыта {ticket.ticket_id}")
             return
 

@@ -2,6 +2,7 @@
 
 from html import escape
 
+from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.models.ticket import Ticket
 from app.helpdesk.services.ticket_clarification_service import (
     TicketClarification,
@@ -23,6 +24,7 @@ def _format_phone_link(phone: str | None) -> str:
 def render_group_ticket(
     ticket: Ticket,
     *,
+    room_context: RoomTicketContext | None = None,
     last_clarification: TicketClarification | None = None,
     attached_user_reply: TicketUserReply | None = None,
     closing_reply: TicketClosingReply | None = None,
@@ -46,6 +48,22 @@ def render_group_ticket(
         f"{text}"
     )
     blocks = [card_text]
+    if room_context is not None:
+        context_lines = ["Объект:"]
+        if room_context.location_display_snapshot:
+            context_lines.append(escape(room_context.location_display_snapshot))
+        elif room_context.room_number_snapshot:
+            context_lines.append(f"номер {escape(room_context.room_number_snapshot)}")
+        else:
+            context_lines.append("не указан")
+        if room_context.category_snapshot:
+            context_lines.extend(
+                [
+                    "Категория объекта:",
+                    escape(room_context.category_snapshot),
+                ]
+            )
+        blocks.append("\n".join(context_lines))
     if last_clarification is not None:
         clarification_author = escape(last_clarification.actor_name)
         clarification_text = escape(last_clarification.card_text)

@@ -11,6 +11,7 @@ from app.admin.services.access_service import (
 )
 from app.common.user_helpers import get_first_name
 from app.helpdesk.keyboards.helpdesk_keyboards import (
+    build_jamaica_main_menu_keyboard,
     build_main_menu_keyboard,
     build_registration_keyboard,
 )
@@ -29,7 +30,7 @@ from config.config import get_config
 START_TEXT_TEMPLATE = (
     "Привет, {name}!\n\n"
     "Меню IT Help Desk\n\n"
-    "Нажмите «Создать обращение», чтобы отправить заявку в IT-службу."
+    "Выберите нужное действие в меню."
 )
 
 
@@ -70,6 +71,8 @@ def _build_menu_for_user(user_id: int, cfg, access_registry):
     hotel_code = access_registry.get_user_hotel(user_id)
     hotel_features = set(access_registry.get_hotel_features(hotel_code))
     is_service_actor = can_view_service
+    if not is_service_actor and hotel_code == "jamaica":
+        return build_jamaica_main_menu_keyboard()
     return build_main_menu_keyboard(
         can_create_ticket=True,
         can_view_my_tickets=True,

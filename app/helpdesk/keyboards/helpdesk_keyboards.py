@@ -3,6 +3,7 @@
 from maxapi.types import ButtonsPayload, CallbackButton, RequestContactButton
 
 from app.helpdesk.models.ticket import Ticket, TicketStatus
+from app.helpdesk.repositories.location_repository import IssueCategoryRef
 from app.helpdesk.payloads import (
     ClarificationCancelPayload,
     CloseReplyCancelPayload,
@@ -75,6 +76,67 @@ def build_main_menu_keyboard(
         )
 
     return ButtonsPayload(buttons=buttons).pack()
+
+
+def build_jamaica_main_menu_keyboard():
+    """Собирает пользовательское меню Jamaica без выбора корпуса."""
+
+    return ButtonsPayload(
+        buttons=[
+            [
+                CallbackButton(
+                    text="Заявка по номеру",
+                    payload=UserMenuPayload(action="jamaica_room").pack(),
+                )
+            ],
+            [
+                CallbackButton(
+                    text="Прочее",
+                    payload=UserMenuPayload(action="jamaica_other").pack(),
+                )
+            ],
+            [CallbackButton(text="Мои заявки", payload=UserMenuPayload(action="my").pack())],
+            [CallbackButton(text="Помощь", payload=UserMenuPayload(action="help").pack())],
+        ]
+    ).pack()
+
+
+def build_jamaica_issue_categories_keyboard(categories: tuple[IssueCategoryRef, ...]):
+    """Собирает клавиатуру hotel-specific категорий по номеру."""
+
+    rows = [
+        [
+            CallbackButton(
+                text=category.title,
+                payload=UserMenuPayload(action="jamaica_cat", value=category.code).pack(),
+            )
+        ]
+        for category in categories
+    ]
+    rows.append([CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())])
+    return ButtonsPayload(buttons=rows).pack()
+
+
+def build_jamaica_room_not_found_keyboard():
+    """Собирает действия для неизвестного номера Jamaica."""
+
+    return ButtonsPayload(
+        buttons=[
+            [
+                CallbackButton(
+                    text="Ввести заново",
+                    payload=UserMenuPayload(action="jamaica_room_retry").pack(),
+                )
+            ],
+            [
+                CallbackButton(
+                    text="Создать как Прочее",
+                    payload=UserMenuPayload(action="jamaica_other").pack(),
+                )
+            ],
+            [CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())],
+        ]
+    ).pack()
 
 
 def build_categories_keyboard(categories: list[str]):

@@ -28,15 +28,20 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_clarification_cancel_keyboard,
     build_clarification_reply_keyboard,
     build_close_reply_cancel_keyboard,
+    build_jamaica_issue_categories_keyboard,
+    build_jamaica_main_menu_keyboard,
+    build_jamaica_room_not_found_keyboard,
     build_main_menu_keyboard,
     build_open_tickets_keyboard,
     build_registration_keyboard,
     build_ticket_actions_keyboard,
 )
+from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.models.ticket import TicketStatus
 from app.helpdesk.runtime import (
     get_clarification_session_service,
     get_close_reply_session_service,
+    get_room_ticket_context_service,
     get_ticket_clarification_service,
     get_ticket_link_service,
     get_ticket_service,
@@ -168,6 +173,8 @@ def _build_menu_for_user_with_registry(user_id: int, cfg, access_registry):
     hotel_code = access_registry.get_user_hotel(user_id)
     hotel_features = set(access_registry.get_hotel_features(hotel_code))
     is_service_actor = can_view_service
+    if not is_service_actor and hotel_code == "jamaica":
+        return build_jamaica_main_menu_keyboard()
     return build_main_menu_keyboard(
         can_create_ticket=True,
         can_view_my_tickets=True,
@@ -275,6 +282,7 @@ def register(dp) -> None:
     close_reply_sessions = get_close_reply_session_service()
     ticket_clarifications = get_ticket_clarification_service()
     user_reply_sessions = get_user_reply_session_service()
+    room_ticket_contexts = get_room_ticket_context_service()
     observability = get_observability_service()
     max_messages = MaxMessageService(observability=observability, retry_config=cfg.max_api)
     media_forward = MediaForwardService()
@@ -283,6 +291,7 @@ def register(dp) -> None:
         group_chat_id=cfg.bot.group_chat_id,
         max_messages=max_messages,
         clarifications=ticket_clarifications,
+        room_contexts=room_ticket_contexts,
         observability=get_observability_service(),
     )
     user_flow = get_user_flow_service()
@@ -314,6 +323,30 @@ def register(dp) -> None:
             if item.user_id == user_id:
                 return item.user_name, item.phone
         return f"ID {user_id}", None
+
+    def _save_room_ticket_context(ticket_id: str, draft):
+        """Сохраняет контекст номера для карточки заявки."""
+
+        if room_ticket_contexts is None or not draft.is_room_ticket_flow:
+            return None
+        if not draft.hotel_id:
+            return None
+        return room_ticket_contexts.save_context(
+            RoomTicketContext(
+                ticket_key=ticket_id,
+                hotel_id=draft.hotel_id,
+                location_id=draft.location_id,
+                issue_category_id=draft.issue_category_id,
+                room_number_snapshot=draft.room_number,
+                location_display_snapshot=draft.location_display,
+                category_snapshot=draft.issue_category_title or draft.category,
+                metadata={
+                    "source": "jamaica_room_ticket_flow",
+                    "hotel_code": draft.hotel_code,
+                    "category_code": draft.issue_category_code,
+                },
+            )
+        )
 
     async def _send_delayed_submit(user_id: int, bot) -> None:
         """Автоматически отправляет черновик после паузы в сообщениях."""
@@ -452,9 +485,13 @@ def register(dp) -> None:
             requester_phone=requester_phone,
             requester_department=requester_department,
         )
+        room_context = _save_room_ticket_context(ticket.ticket_id, draft)
 
         group_sent = None
-        ticket_text = specialist_texts.render_group_ticket(ticket)
+        ticket_text = specialist_texts.render_group_ticket(
+            ticket,
+            room_context=room_context,
+        )
         action_keyboard = build_ticket_actions_keyboard(ticket)
         media_attachments = list(draft.attachments or [])
         try:
@@ -1521,7 +1558,7 @@ def register(dp) -> None:
             text=(
                 f"Привет, {name}!\n\n"
                 "Меню IT Help Desk\n\n"
-                "Нажмите «Создать обращение», чтобы отправить заявку в IT-службу."
+                "Выберите нужное действие в меню."
             ),
             attachments=[_build_menu_for_user_with_registry(user_id, cfg, access_registry)],
         )
@@ -2027,6 +2064,53 @@ def register(dp) -> None:
             )
             draft.step = "awaiting_tv_escalation_text"
             _schedule_problem_submit(sender_id, event._ensure_bot())
+            return
+
+        if draft.step == "awaiting_room_number":
+            if room_ticket_contexts is None or not draft.hotel_id:
+                user_flow.reset(sender_id)
+                await event.message.answer(
+                    text="Справочник номеров недоступен. Вернитесь в главное меню.",
+                    attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
+                )
+                return
+            room_number = text.strip()
+            if not room_number or room_number.startswith("/"):
+                await event.message.answer(
+                    text="Введите номер комнаты или домика текстом.",
+                    attachments=[build_jamaica_room_not_found_keyboard()],
+                )
+                return
+            location = room_ticket_contexts.find_location(draft.hotel_id, room_number)
+            if location is None:
+                await event.message.answer(
+                    text="Такого номера не существует.",
+                    attachments=[build_jamaica_room_not_found_keyboard()],
+                )
+                return
+            categories_for_room = room_ticket_contexts.list_location_categories(
+                draft.hotel_id,
+            )
+            if not categories_for_room:
+                user_flow.reset(sender_id)
+                await event.message.answer(
+                    text="Для этого отеля не настроены категории заявок.",
+                    attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
+                )
+                return
+            user_flow.set_room_ticket_location(
+                sender_id,
+                location_id=location.id,
+                room_number=location.room_number,
+                location_display=location.display_name,
+            )
+            await event.message.answer(
+                text=(
+                    f"Объект: {location.display_name}\n"
+                    "Выберите категорию обращения."
+                ),
+                attachments=[build_jamaica_issue_categories_keyboard(categories_for_room)],
+            )
             return
 
         if draft.step == "awaiting_problem_text":

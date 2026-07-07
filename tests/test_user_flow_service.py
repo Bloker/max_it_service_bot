@@ -53,6 +53,53 @@ class UserFlowServiceTests(unittest.TestCase):
 
         self.assertEqual([source], draft.source_audio_messages)
 
+    def test_room_ticket_flow_keeps_location_category_context(self) -> None:
+        user_id = 404
+
+        draft = self.service.begin_room_ticket(
+            user_id,
+            hotel_id=10,
+            hotel_code="jamaica",
+        )
+        self.assertEqual("awaiting_room_number", draft.step)
+        self.assertTrue(draft.is_room_ticket_flow)
+
+        draft = self.service.set_room_ticket_location(
+            user_id,
+            location_id=20,
+            room_number="2105",
+            location_display="Корпус 2, номер 2105",
+        )
+        self.assertEqual("awaiting_room_issue_category", draft.step)
+        self.assertEqual("2105", draft.room_number)
+
+        draft = self.service.set_room_ticket_category(
+            user_id,
+            category_id=30,
+            category_code="internet",
+            category_title="Интернет",
+        )
+        self.assertEqual("awaiting_problem_text", draft.step)
+        self.assertEqual("Интернет", draft.category)
+        self.assertEqual(30, draft.issue_category_id)
+
+    def test_begin_create_clears_room_ticket_context(self) -> None:
+        user_id = 505
+        self.service.begin_room_ticket(user_id, hotel_id=10, hotel_code="jamaica")
+        self.service.set_room_ticket_location(
+            user_id,
+            location_id=20,
+            room_number="101",
+            location_display="Корпус 1, номер 101",
+        )
+
+        draft = self.service.begin_create(user_id)
+
+        self.assertFalse(draft.is_room_ticket_flow)
+        self.assertIsNone(draft.hotel_id)
+        self.assertIsNone(draft.location_id)
+        self.assertIsNone(draft.issue_category_id)
+
 
 if __name__ == "__main__":
     unittest.main()

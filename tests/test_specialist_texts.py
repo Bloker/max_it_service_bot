@@ -1,6 +1,7 @@
 import unittest
 from datetime import datetime, timezone
 
+from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.models.ticket import Ticket, TicketStatus
 from app.helpdesk.services.ticket_clarification_service import TicketClarificationService
 from app.helpdesk.texts.specialist_texts import render_group_ticket, render_open_tickets_list
@@ -180,6 +181,30 @@ class SpecialistTextsTests(unittest.TestCase):
         self.assertIn("Ответ при закрытии:", text)
         self.assertIn("VPN восстановлен &amp; проверен", text)
         self.assertNotIn("Ответ при закрытии:", regular_text)
+
+    def test_render_group_ticket_includes_room_ticket_context(self) -> None:
+        ticket = Ticket(
+            id="T-00001",
+            user_id=101,
+            category="Интернет",
+            text="Не работает Wi-Fi",
+        )
+        context = RoomTicketContext(
+            ticket_key="T-00001",
+            hotel_id=1,
+            location_id=2,
+            issue_category_id=3,
+            room_number_snapshot="2105",
+            location_display_snapshot="Корпус <2>, номер 2105",
+            category_snapshot="Интернет & Wi-Fi",
+        )
+
+        text = render_group_ticket(ticket, room_context=context)
+
+        self.assertIn("Объект:", text)
+        self.assertIn("Корпус &lt;2&gt;, номер 2105", text)
+        self.assertIn("Категория объекта:", text)
+        self.assertIn("Интернет &amp; Wi-Fi", text)
 
     def test_render_ticket_closed_notification_formats_created_date(self) -> None:
         ticket = Ticket(

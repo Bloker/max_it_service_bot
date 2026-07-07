@@ -6,10 +6,14 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_clarification_cancel_keyboard,
     build_clarification_reply_keyboard,
     build_close_reply_cancel_keyboard,
+    build_jamaica_issue_categories_keyboard,
+    build_jamaica_main_menu_keyboard,
+    build_jamaica_room_not_found_keyboard,
     build_main_menu_keyboard,
     build_open_tickets_keyboard,
     build_ticket_actions_keyboard,
 )
+from app.helpdesk.repositories.location_repository import IssueCategoryRef
 from app.helpdesk.models.ticket import Ticket, TicketStatus
 
 
@@ -52,6 +56,42 @@ class HelpdeskKeyboardTests(unittest.TestCase):
         button = keyboard.payload.buttons[-1][0]
         self.assertEqual(button.text, "Главное меню")
         self.assertEqual(button.payload, "usr|menu|")
+
+    def test_jamaica_main_menu_has_room_other_my_help_without_buildings(self) -> None:
+        keyboard = build_jamaica_main_menu_keyboard()
+
+        labels = [button.text for row in keyboard.payload.buttons for button in row]
+        self.assertEqual(
+            labels,
+            ["Заявка по номеру", "Прочее", "Мои заявки", "Помощь"],
+        )
+        self.assertNotIn("Корпус", " ".join(labels))
+        self.assertNotIn("Здание", " ".join(labels))
+
+    def test_jamaica_issue_categories_keyboard_uses_category_code_payload(self) -> None:
+        keyboard = build_jamaica_issue_categories_keyboard(
+            (
+                IssueCategoryRef(1, "tv", "ТВ", True, 10),
+                IssueCategoryRef(2, "other", "Прочее", False, 50),
+            )
+        )
+
+        self.assertEqual(keyboard.payload.buttons[0][0].text, "ТВ")
+        self.assertEqual(keyboard.payload.buttons[0][0].payload, "usr|jamaica_cat|tv")
+        self.assertEqual(keyboard.payload.buttons[1][0].text, "Прочее")
+        self.assertEqual(keyboard.payload.buttons[1][0].payload, "usr|jamaica_cat|other")
+        self.assertEqual(keyboard.payload.buttons[-1][0].payload, "usr|menu|")
+
+    def test_jamaica_room_not_found_keyboard_allows_retry_other_and_menu(self) -> None:
+        keyboard = build_jamaica_room_not_found_keyboard()
+
+        labels = [row[0].text for row in keyboard.payload.buttons]
+        payloads = [row[0].payload for row in keyboard.payload.buttons]
+        self.assertEqual(labels, ["Ввести заново", "Создать как Прочее", "Главное меню"])
+        self.assertEqual(
+            payloads,
+            ["usr|jamaica_room_retry|", "usr|jamaica_other|", "usr|menu|"],
+        )
 
     def test_clarification_cancel_keyboard_contains_ticket_payload(self) -> None:
         keyboard = build_clarification_cancel_keyboard("T-00001")

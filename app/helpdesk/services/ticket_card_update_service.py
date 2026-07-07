@@ -28,12 +28,14 @@ class TicketCardUpdateService:
         group_chat_id: int,
         max_messages: MaxMessageService | None = None,
         clarifications: TicketClarificationService | None = None,
+        room_contexts=None,
         observability: ObservabilityService | None = None,
     ) -> None:
         self._ticket_links = ticket_links
         self._group_chat_id = group_chat_id
         self._max_messages = max_messages or MaxMessageService()
         self._clarifications = clarifications
+        self._room_contexts = room_contexts
         self._observability = observability
 
     async def update_group_ticket_card(
@@ -49,6 +51,7 @@ class TicketCardUpdateService:
         group_message_id = self._ticket_links.get_group_message_id(ticket_id)
         text = specialist_texts.render_group_ticket(
             ticket,
+            room_context=self._get_room_context(ticket_id),
             last_clarification=self._get_last_clarification(ticket_id),
             attached_user_reply=self._get_attached_user_reply(ticket_id),
             closing_reply=self._get_closing_reply(ticket_id),
@@ -179,6 +182,7 @@ class TicketCardUpdateService:
         ticket_id = ticket.ticket_id
         text = specialist_texts.render_group_ticket(
             ticket,
+            room_context=self._get_room_context(ticket_id),
             last_clarification=self._get_last_clarification(ticket_id),
             attached_user_reply=self._get_attached_user_reply(ticket_id),
             closing_reply=self._get_closing_reply(ticket_id),
@@ -250,6 +254,13 @@ class TicketCardUpdateService:
         if self._clarifications is None:
             return None
         return self._clarifications.get_last(ticket_id)
+
+    def _get_room_context(self, ticket_id: str):
+        """Возвращает hotel-specific контекст заявки."""
+
+        if self._room_contexts is None:
+            return None
+        return self._room_contexts.get_context(ticket_id)
 
     def _get_attached_user_reply(self, ticket_id: str):
         """Возвращает прикреплённый ответ пользователя."""

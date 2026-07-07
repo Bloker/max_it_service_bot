@@ -23,6 +23,7 @@ _clarification_session_service: ClarificationSessionService | None = None
 _close_reply_session_service: CloseReplySessionService | None = None
 _ticket_clarification_service: TicketClarificationService | None = None
 _user_reply_session_service: UserReplySessionService | None = None
+_room_ticket_context_service = None
 
 
 def _build_ticket_service() -> TicketLifecycleService:
@@ -170,3 +171,50 @@ def get_user_reply_session_service() -> UserReplySessionService:
     if _user_reply_session_service is None:
         _user_reply_session_service = UserReplySessionService()
     return _user_reply_session_service
+
+
+def get_room_ticket_context_service():
+    """Возвращает сервис Jamaica room-ticket flow для PostgreSQL backend."""
+
+    global _room_ticket_context_service
+    if _room_ticket_context_service is not None:
+        return _room_ticket_context_service
+
+    cfg = get_config()
+    if cfg.tickets.backend != "postgres":
+        return None
+
+    from app.helpdesk.repositories.postgres_location_repository import (
+        PostgresLocationRepository,
+    )
+    from app.helpdesk.repositories.postgres_room_ticket_context_repository import (
+        PostgresRoomTicketContextRepository,
+    )
+    from app.helpdesk.services.location_service import LocationService
+    from app.helpdesk.services.room_ticket_context_service import (
+        RoomTicketContextService,
+    )
+
+    location_repository = PostgresLocationRepository(
+        host=cfg.tickets.postgres_host,
+        port=cfg.tickets.postgres_port,
+        database=cfg.tickets.postgres_db,
+        user=cfg.tickets.postgres_user,
+        password=cfg.tickets.postgres_password,
+        sslmode=cfg.tickets.postgres_sslmode,
+        connect_timeout_sec=cfg.tickets.postgres_connect_timeout_sec,
+    )
+    context_repository = PostgresRoomTicketContextRepository(
+        host=cfg.tickets.postgres_host,
+        port=cfg.tickets.postgres_port,
+        database=cfg.tickets.postgres_db,
+        user=cfg.tickets.postgres_user,
+        password=cfg.tickets.postgres_password,
+        sslmode=cfg.tickets.postgres_sslmode,
+        connect_timeout_sec=cfg.tickets.postgres_connect_timeout_sec,
+    )
+    _room_ticket_context_service = RoomTicketContextService(
+        locations=LocationService(location_repository),
+        context_repository=context_repository,
+    )
+    return _room_ticket_context_service
