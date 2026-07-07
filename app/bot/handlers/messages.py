@@ -276,7 +276,7 @@ def register(dp) -> None:
     ticket_clarifications = get_ticket_clarification_service()
     user_reply_sessions = get_user_reply_session_service()
     observability = get_observability_service()
-    max_messages = MaxMessageService(observability=observability)
+    max_messages = MaxMessageService(observability=observability, retry_config=cfg.max_api)
     media_forward = MediaForwardService()
     ticket_card_updates = TicketCardUpdateService(
         ticket_links=ticket_links,

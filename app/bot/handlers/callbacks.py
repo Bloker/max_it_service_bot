@@ -251,7 +251,7 @@ def register(dp) -> None:
     ticket_clarifications = get_ticket_clarification_service()
     user_reply_sessions = get_user_reply_session_service()
     observability = get_observability_service()
-    max_messages = MaxMessageService(observability=observability)
+    max_messages = MaxMessageService(observability=observability, retry_config=cfg.max_api)
     ticket_card_updates = TicketCardUpdateService(
         ticket_links=ticket_links,
         group_chat_id=cfg.bot.group_chat_id,
@@ -298,10 +298,7 @@ def register(dp) -> None:
         await event.answer(notification="Опишите проблему TV для поддержки")
 
     async def _safe_answer(event: MessageCallback, notification: str) -> None:
-        try:
-            await event.answer(notification=notification)
-        except Exception:
-            logger.exception("Failed to send callback answer: notification=%s", notification)
+        await max_messages.answer_callback(event=event, notification=notification)
 
     async def _replace_callback_message(event: MessageCallback, text: str, attachment) -> None:
         bot = event._ensure_bot()

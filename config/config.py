@@ -8,6 +8,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from app.bot.services.max_api_retry import MaxApiRetryConfig
+
 
 @dataclass(frozen=True)
 class LogsConfig:
@@ -136,6 +138,7 @@ class AppConfig:
     """Полная конфигурация приложения."""
 
     bot: BotConfig
+    max_api: MaxApiRetryConfig
     logs: LogsConfig
     tickets: TicketStorageConfig
     network_tools: NetworkToolsConfig
@@ -205,6 +208,16 @@ def _parse_float_env(name: str, default: float) -> float:
         return float(raw)
     except ValueError as exc:
         raise RuntimeError(f"{name} must be a number") from exc
+
+
+def _parse_int_env(name: str, default: int) -> int:
+    """Парсит integer env-переменную с понятной ошибкой."""
+
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
 
 
 def get_config() -> AppConfig:
@@ -285,6 +298,37 @@ def get_config() -> AppConfig:
     if webhook_path == webhook_health_path:
         raise RuntimeError("MAX_WEBHOOK_PATH and MAX_WEBHOOK_HEALTH_PATH must be different")
     webhook_secret = os.getenv("MAX_WEBHOOK_SECRET", "").strip()
+
+    max_api_retry_attempts = _parse_int_env("MAX_API_RETRY_MAX_ATTEMPTS", 4)
+    max_api_retry_base_delay = _parse_float_env("MAX_API_RETRY_BASE_DELAY_SEC", 0.5)
+    max_api_retry_max_delay = _parse_float_env("MAX_API_RETRY_MAX_DELAY_SEC", 5.0)
+    max_api_retry_jitter = _parse_float_env("MAX_API_RETRY_JITTER_SEC", 0.25)
+    max_api_retry_5xx_attempts = _parse_int_env("MAX_API_RETRY_5XX_ATTEMPTS", 2)
+    max_message_edit_min_interval = _parse_float_env(
+        "MAX_MESSAGE_EDIT_MIN_INTERVAL_SEC",
+        1.0,
+    )
+    if max_api_retry_attempts < 1:
+        raise RuntimeError("MAX_API_RETRY_MAX_ATTEMPTS must be >= 1")
+    if max_api_retry_5xx_attempts < 1:
+        raise RuntimeError("MAX_API_RETRY_5XX_ATTEMPTS must be >= 1")
+    if max_api_retry_base_delay < 0:
+        raise RuntimeError("MAX_API_RETRY_BASE_DELAY_SEC must be >= 0")
+    if max_api_retry_max_delay < 0:
+        raise RuntimeError("MAX_API_RETRY_MAX_DELAY_SEC must be >= 0")
+    if max_api_retry_jitter < 0:
+        raise RuntimeError("MAX_API_RETRY_JITTER_SEC must be >= 0")
+    if max_message_edit_min_interval < 0:
+        raise RuntimeError("MAX_MESSAGE_EDIT_MIN_INTERVAL_SEC must be >= 0")
+
+    max_api = MaxApiRetryConfig(
+        max_attempts=max_api_retry_attempts,
+        base_delay_sec=max_api_retry_base_delay,
+        max_delay_sec=max_api_retry_max_delay,
+        jitter_sec=max_api_retry_jitter,
+        server_error_attempts=max_api_retry_5xx_attempts,
+        edit_min_interval_sec=max_message_edit_min_interval,
+    )
 
     ticket_backend = os.getenv("MAX_TICKET_BACKEND", "sqlite").strip().lower()
     if ticket_backend not in {"sqlite", "memory", "postgres"}:
@@ -458,6 +502,7 @@ def get_config() -> AppConfig:
             webhook_health_path=webhook_health_path,
             webhook_secret=webhook_secret,
         ),
+        max_api=max_api,
         logs=logs,
         tickets=TicketStorageConfig(
             backend=ticket_backend,

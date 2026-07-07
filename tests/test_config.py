@@ -51,6 +51,43 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(cfg.observability.audit_enabled)
         self.assertTrue(cfg.observability.ticket_events_enabled)
         self.assertTrue(cfg.observability.network_tool_runs_enabled)
+        self.assertEqual(cfg.max_api.max_attempts, 4)
+        self.assertEqual(cfg.max_api.base_delay_sec, 0.5)
+        self.assertEqual(cfg.max_api.max_delay_sec, 5.0)
+        self.assertEqual(cfg.max_api.jitter_sec, 0.25)
+        self.assertEqual(cfg.max_api.server_error_attempts, 2)
+        self.assertEqual(cfg.max_api.edit_min_interval_sec, 1.0)
+
+    def test_max_api_retry_custom_config_parsed(self) -> None:
+        env = {
+            "MAX_BOT_TOKEN": "test-token",
+            "MAX_GROUP_CHAT_ID": "123",
+            "MAX_API_RETRY_MAX_ATTEMPTS": "5",
+            "MAX_API_RETRY_BASE_DELAY_SEC": "0.2",
+            "MAX_API_RETRY_MAX_DELAY_SEC": "3.5",
+            "MAX_API_RETRY_JITTER_SEC": "0.1",
+            "MAX_API_RETRY_5XX_ATTEMPTS": "3",
+            "MAX_MESSAGE_EDIT_MIN_INTERVAL_SEC": "0.7",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            cfg = get_config()
+
+        self.assertEqual(cfg.max_api.max_attempts, 5)
+        self.assertEqual(cfg.max_api.base_delay_sec, 0.2)
+        self.assertEqual(cfg.max_api.max_delay_sec, 3.5)
+        self.assertEqual(cfg.max_api.jitter_sec, 0.1)
+        self.assertEqual(cfg.max_api.server_error_attempts, 3)
+        self.assertEqual(cfg.max_api.edit_min_interval_sec, 0.7)
+
+    def test_max_api_retry_rejects_invalid_values(self) -> None:
+        env = {
+            "MAX_BOT_TOKEN": "test-token",
+            "MAX_GROUP_CHAT_ID": "123",
+            "MAX_API_RETRY_MAX_ATTEMPTS": "0",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with self.assertRaises(RuntimeError):
+                get_config()
 
     def test_postgres_backend_requires_host(self) -> None:
         env = {

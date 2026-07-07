@@ -11,6 +11,7 @@ from config.config import (
     AppConfig,
     BotConfig,
     LogsConfig,
+    MaxApiRetryConfig,
     NetariumConfig,
     NetworkPolicyConfig,
     NetworkToolsConfig,
@@ -35,6 +36,7 @@ def _config(schema_mode: str) -> AppConfig:
             polling_timeout_sec=30,
             polling_min_interval_sec=0.55,
         ),
+        max_api=MaxApiRetryConfig(),
         logs=LogsConfig(),
         tickets=TicketStorageConfig(
             backend="postgres",
