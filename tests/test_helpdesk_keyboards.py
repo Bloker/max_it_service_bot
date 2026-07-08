@@ -14,6 +14,7 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_open_tickets_keyboard,
     build_ticket_actions_keyboard,
 )
+from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.repositories.location_repository import IssueCategoryRef
 from app.helpdesk.models.ticket import Ticket, TicketStatus
 
@@ -68,6 +69,21 @@ class HelpdeskKeyboardTests(unittest.TestCase):
         )
         self.assertNotIn("Корпус", " ".join(labels))
         self.assertNotIn("Здание", " ".join(labels))
+
+    def test_jamaica_main_menu_places_wifi_button_under_other_when_enabled(self) -> None:
+        keyboard = build_jamaica_main_menu_keyboard(can_use_wifi_help=True)
+
+        labels = [button.text for row in keyboard.payload.buttons for button in row]
+        self.assertEqual(
+            labels,
+            [
+                "Заявка по номеру",
+                "Прочее",
+                "Проблема Wi-Fi у гостя",
+                "Мои заявки",
+                "Помощь",
+            ],
+        )
 
     def test_jamaica_issue_categories_keyboard_uses_category_code_payload(self) -> None:
         keyboard = build_jamaica_issue_categories_keyboard(
@@ -166,6 +182,18 @@ class HelpdeskKeyboardTests(unittest.TestCase):
         self.assertEqual(buttons[2][0].payload, "spc|close_with_reply|T-00001")
         self.assertEqual(buttons[-1][0].text, "Не закрытые заявки")
 
+    def test_ticket_actions_keyboard_adds_room_history_for_room_ticket(self) -> None:
+        ticket = Ticket(id="T-00088", user_id=101, category="ТВ", text="One")
+        room_context = RoomTicketContext(ticket_key="T-00088", hotel_id=1, location_id=12)
+
+        keyboard = build_ticket_actions_keyboard(ticket, room_context=room_context)
+
+        labels = [button.text for row in keyboard.payload.buttons for button in row]
+        self.assertIn("История номера", labels)
+        history_button = keyboard.payload.buttons[-2][0]
+        self.assertEqual(history_button.text, "История номера")
+        self.assertEqual(history_button.payload, "spc|room_history|T-00088")
+
     def test_ticket_actions_keyboard_for_in_progress_ticket(self) -> None:
         ticket = Ticket(
             id="T-00002",
@@ -186,6 +214,23 @@ class HelpdeskKeyboardTests(unittest.TestCase):
         self.assertEqual(buttons[1][0].payload, "spc|close_with_reply|T-00002")
         self.assertEqual(buttons[2][0].text, "Запросить уточнение")
         self.assertEqual(buttons[-1][0].text, "Не закрытые заявки")
+
+    def test_ticket_actions_keyboard_keeps_room_history_for_closed_ticket(self) -> None:
+        ticket = Ticket(
+            id="T-00003",
+            user_id=103,
+            category="Прочее",
+            text="Three",
+            status=TicketStatus.CLOSED,
+        )
+        room_context = RoomTicketContext(ticket_key="T-00003", hotel_id=1, location_id=12)
+
+        keyboard = build_ticket_actions_keyboard(ticket, room_context=room_context)
+        buttons = keyboard.payload.buttons
+
+        self.assertEqual(len(buttons), 2)
+        self.assertEqual(buttons[0][0].text, "История номера")
+        self.assertEqual(buttons[1][0].text, "Не закрытые заявки")
 
     def test_ticket_actions_keyboard_for_closed_ticket_keeps_only_safe_navigation(self) -> None:
         ticket = Ticket(

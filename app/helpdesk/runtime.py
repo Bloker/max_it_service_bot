@@ -8,6 +8,7 @@ from app.helpdesk.services.postgres_ticket_link_service import PostgresTicketLin
 from app.helpdesk.services.clarification_session_service import ClarificationSessionService
 from app.helpdesk.services.close_reply_session_service import CloseReplySessionService
 from app.helpdesk.services.ticket_clarification_service import TicketClarificationService
+from app.helpdesk.services.room_history_service import RoomHistoryService
 from app.helpdesk.services.ticket_link_service import TicketLinkService
 from app.helpdesk.services.ticket_lifecycle_service import TicketLifecycleService
 from app.helpdesk.services.user_reply_session_service import UserReplySessionService
@@ -24,6 +25,7 @@ _close_reply_session_service: CloseReplySessionService | None = None
 _ticket_clarification_service: TicketClarificationService | None = None
 _user_reply_session_service: UserReplySessionService | None = None
 _room_ticket_context_service = None
+_room_history_service: RoomHistoryService | None = None
 
 
 def _build_ticket_service() -> TicketLifecycleService:
@@ -218,3 +220,32 @@ def get_room_ticket_context_service():
         context_repository=context_repository,
     )
     return _room_ticket_context_service
+
+
+def get_room_history_service() -> RoomHistoryService:
+    """Возвращает singleton сервиса истории Jamaica room-ticket."""
+
+    global _room_history_service
+    if _room_history_service is not None:
+        return _room_history_service
+
+    cfg = get_config()
+    if cfg.tickets.backend != "postgres":
+        _room_history_service = RoomHistoryService()
+        return _room_history_service
+
+    from app.helpdesk.repositories.postgres_room_ticket_context_repository import (
+        PostgresRoomTicketContextRepository,
+    )
+
+    repository = PostgresRoomTicketContextRepository(
+        host=cfg.tickets.postgres_host,
+        port=cfg.tickets.postgres_port,
+        database=cfg.tickets.postgres_db,
+        user=cfg.tickets.postgres_user,
+        password=cfg.tickets.postgres_password,
+        sslmode=cfg.tickets.postgres_sslmode,
+        connect_timeout_sec=cfg.tickets.postgres_connect_timeout_sec,
+    )
+    _room_history_service = RoomHistoryService(repository=repository)
+    return _room_history_service

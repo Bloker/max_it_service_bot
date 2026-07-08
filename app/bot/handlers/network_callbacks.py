@@ -10,7 +10,10 @@ from app.admin.services.access_service import (
     can_view_service_functions,
     is_admin,
 )
-from app.helpdesk.keyboards.helpdesk_keyboards import build_main_menu_keyboard
+from app.helpdesk.keyboards.helpdesk_keyboards import (
+    build_jamaica_main_menu_keyboard,
+    build_main_menu_keyboard,
+)
 from app.network.keyboards.network_keyboards import (
     build_device_type_keyboard,
     build_network_main_menu_keyboard,
@@ -53,6 +56,10 @@ def register(dp) -> None:
         hotel_code = access_registry.get_user_hotel(user_id)
         hotel_features = set(access_registry.get_hotel_features(hotel_code))
         is_service_actor = can_view_service
+        if not is_service_actor and hotel_code == "jamaica":
+            return build_jamaica_main_menu_keyboard(
+                can_use_wifi_help="wifi_guest_issue" in hotel_features,
+            )
         return build_main_menu_keyboard(
             can_create_ticket=True,
             can_view_my_tickets=True,

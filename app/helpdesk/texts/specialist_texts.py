@@ -9,7 +9,7 @@ from app.helpdesk.services.ticket_clarification_service import (
     TicketClosingReply,
     TicketUserReply,
 )
-from app.helpdesk.texts.formatters import format_ru_phone
+from app.helpdesk.texts.formatters import format_room_context_object, format_ru_phone
 
 
 def _format_phone_link(phone: str | None) -> str:
@@ -24,18 +24,13 @@ def _format_phone_link(phone: str | None) -> str:
 def _format_room_context_line(room_context: RoomTicketContext) -> str:
     """Форматирует объект обслуживания одной строкой для карточки."""
 
-    location_display = room_context.location_display_snapshot or ""
-    normalized_display = location_display.lower()
-    if "домик" in normalized_display and room_context.room_number_snapshot:
-        object_text = f"Домик {escape(room_context.room_number_snapshot)}"
-    elif room_context.room_number_snapshot:
-        object_text = f"Номер {escape(room_context.room_number_snapshot)}"
-    elif location_display:
-        object_text = escape(location_display)
-    else:
-        object_text = "не указан"
-    if room_context.category_snapshot:
-        object_text = f"{object_text} ({escape(room_context.category_snapshot)})"
+    object_text = escape(
+        format_room_context_object(
+            room_number_snapshot=room_context.room_number_snapshot,
+            location_display_snapshot=room_context.location_display_snapshot,
+            category_snapshot=room_context.category_snapshot,
+        )
+    )
     return f"Объект: {object_text}"
 
 

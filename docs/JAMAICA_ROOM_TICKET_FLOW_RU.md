@@ -122,6 +122,7 @@ test DB: test_dev_max
 Главное меню:
   [Заявка по номеру]
   [Прочее]
+  [Проблема Wi-Fi у гостя]   если для отеля включен feature `wifi_guest_issue`
   [Мои заявки]
   [Помощь]
 
@@ -185,8 +186,107 @@ manual smoke by Codex in this run: not executed
 manual smoke через тестового MAX-бота все еще обязателен перед production rollout
 ```
 
+## Stage 3 Status
+
+Статус: completed locally, test-only, production unchanged.
+
+Git / rollout status:
+
+```text
+base local commit: 42e06c6 stabilize jamaica test room ticket ux
+production changed: no
+production service restarted: no
+production DB changed/migrated: no
+production commit: fadf6d3 add integration observability events
+test DB: test_dev_max
+```
+
+Что добавлено:
+
+```text
+В групповую карточку Jamaica room-ticket добавлена кнопка `История номера`.
+Кнопка показывается только если у заявки есть `ticket_context` с ненулевым `location_id`.
+Для `Прочее` без номера кнопка не показывается.
+История строится по `helpdesk.ticket_context.hotel_id + location_id`.
+Источник статуса и времени: `helpdesk.ticket_context` + `helpdesk.tickets`.
+Лимит: 10 последних заявок.
+Текущая заявка из истории исключается.
+История отправляется отдельным сообщением в группу и не заменяет основную карточку.
+Кнопка `История номера` сохраняется после `Взять в работу` и `Закрыть`.
+SQL defect fixed: nullable placeholder removed from WHERE construction.
+```
+
+Формат ответа:
+
+```text
+История номера
+
+Объект:
+Номер 112
+
+Последние N заявок
+
+T-xxxxx · Категория · Статус · 07.07 14:12
+```
+
+Локально добавленные файлы Stage 3:
+
+```text
+app/helpdesk/models/room_ticket_history.py
+app/helpdesk/services/room_history_service.py
+app/helpdesk/texts/room_history_texts.py
+tests/test_room_history_service.py
+tests/test_room_history_texts.py
+```
+
+Локально измененные файлы Stage 3:
+
+```text
+app/bot/handlers/callbacks.py
+app/bot/handlers/messages.py
+app/helpdesk/keyboards/helpdesk_keyboards.py
+app/helpdesk/repositories/postgres_room_ticket_context_repository.py
+app/helpdesk/repositories/room_ticket_context_repository.py
+app/helpdesk/runtime.py
+app/helpdesk/services/ticket_card_update_service.py
+app/helpdesk/texts/formatters.py
+app/helpdesk/texts/specialist_texts.py
+tests/test_helpdesk_keyboards.py
+tests/test_ticket_card_update_service.py
+```
+
+Проверки Stage 3:
+
+```text
+read-only production sanity:
+  health: OK, mode=webhook
+  service: active / enabled
+  production HEAD: fadf6d3 add integration observability events
+
+read-only test DB:
+  current_database() = test_dev_max
+  helpdesk.ticket_context rows = 11
+  latest context rows include T-00099/T-00098/T-00097/T-00096/T-00095
+  helpdesk.tickets uses status_code + created_at + closed_at
+
+.venv/bin/python -m compileall app tests config scripts main.py: OK
+.venv/bin/python -m unittest discover -s tests -v: OK, 211 tests
+.venv/bin/python -m unittest tests.test_room_history_service tests.test_room_history_texts tests.test_helpdesk_keyboards tests.test_ticket_card_update_service -v: OK, 31 tests
+git diff --check: OK
+```
+
+Manual smoke Stage 3:
+
+```text
+room history smoke: OK
+cottage history smoke: OK
+other without number has no history button: OK
+history button preserved after status changes: OK
+```
+
 ## Next Stage
 
 ```text
-История номера по location_id
+Stage 3.1: локальный commit без push;
+после отдельной команды владельца — следующий hotel-specific UX шаг
 ```

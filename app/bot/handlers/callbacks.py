@@ -52,6 +52,7 @@ from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.runtime import (
     get_clarification_session_service,
     get_close_reply_session_service,
+    get_room_history_service,
     get_room_ticket_context_service,
     get_ticket_clarification_service,
     get_ticket_link_service,
@@ -60,8 +61,9 @@ from app.helpdesk.runtime import (
     get_user_flow_service,
 )
 from app.helpdesk.services.menu_service import get_ticket_categories
+from app.helpdesk.services.room_history_service import ROOM_HISTORY_LIMIT
 from app.helpdesk.services.ticket_card_update_service import TicketCardUpdateService
-from app.helpdesk.texts import specialist_texts, user_texts
+from app.helpdesk.texts import room_history_texts, specialist_texts, user_texts
 from app.network.keyboards.network_keyboards import build_network_menu_keyboard
 from app.network.runtime import get_network_session_service
 from app.observability.runtime import get_observability_service
@@ -146,7 +148,7 @@ async def _send_ticket_card_from_list(
                     ticket,
                     room_context=room_context,
                 ),
-                attachments=[build_ticket_actions_keyboard(ticket)],
+                attachments=[build_ticket_actions_keyboard(ticket, room_context=room_context)],
                 link=NewMessageLink(type=MessageLinkType.REPLY, mid=group_message_id),
                 format=ParseMode.HTML,
             )
@@ -160,7 +162,7 @@ async def _send_ticket_card_from_list(
 
     await event.message.answer(
         text=specialist_texts.render_group_ticket(ticket, room_context=room_context),
-        attachments=[build_ticket_actions_keyboard(ticket)],
+        attachments=[build_ticket_actions_keyboard(ticket, room_context=room_context)],
         format=ParseMode.HTML,
     )
 
@@ -214,7 +216,9 @@ def _build_menu_for_user(user_id: int, cfg, access_registry):
     hotel_features = set(access_registry.get_hotel_features(hotel_code))
     is_service_actor = can_view_service
     if not is_service_actor and hotel_code == "jamaica":
-        return build_jamaica_main_menu_keyboard()
+        return build_jamaica_main_menu_keyboard(
+            can_use_wifi_help="wifi_guest_issue" in hotel_features,
+        )
     return build_main_menu_keyboard(
         can_create_ticket=True,
         can_view_my_tickets=True,
@@ -266,6 +270,7 @@ def register(dp) -> None:
     ticket_clarifications = get_ticket_clarification_service()
     user_reply_sessions = get_user_reply_session_service()
     room_ticket_contexts = get_room_ticket_context_service()
+    room_history = get_room_history_service()
     observability = get_observability_service()
     max_messages = MaxMessageService(observability=observability, retry_config=cfg.max_api)
     ticket_card_updates = TicketCardUpdateService(
@@ -1138,7 +1143,7 @@ def register(dp) -> None:
                     ticket,
                     room_context=room_context,
                 )
-                action_keyboard = build_ticket_actions_keyboard(ticket)
+                action_keyboard = build_ticket_actions_keyboard(ticket, room_context=room_context)
                 media_attachments = list(draft.attachments or [])
                 try:
                     group_sent = await event._ensure_bot().send_message(
@@ -1401,6 +1406,59 @@ def register(dp) -> None:
                 room_ticket_contexts,
             )
             await event.answer(notification=f"Открыта {ticket.ticket_id}")
+            return
+
+        if action == "room_history":
+            if not can_view_service_functions(
+                user_id=actor_id,
+                admin_ids=admin_ids,
+                specialist_ids=specialist_ids,
+            ):
+                await max_messages.answer_callback(
+                    event=event,
+                    notification=specialist_texts.FORBIDDEN_TEXT,
+                )
+                return
+
+            room_context = room_history.get_context_by_ticket_key(ticket_id)
+            if room_context is None or room_context.location_id is None:
+                await max_messages.answer_callback(
+                    event=event,
+                    notification="История номера недоступна",
+                )
+                return
+
+            try:
+                items = room_history.list_recent_tickets_for_location(
+                    room_context.hotel_id,
+                    room_context.location_id,
+                    exclude_ticket_key=ticket_id,
+                    limit=ROOM_HISTORY_LIMIT,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to load room history: ticket_id=%s hotel_id=%s location_id=%s",
+                    ticket_id,
+                    room_context.hotel_id,
+                    room_context.location_id,
+                )
+                await max_messages.answer_callback(
+                    event=event,
+                    notification="Историю номера получить не удалось",
+                )
+                return
+
+            await event.message.answer(
+                text=room_history_texts.render_room_history(
+                    room_context=room_context,
+                    items=items,
+                ),
+                format=ParseMode.HTML,
+            )
+            await max_messages.answer_callback(
+                event=event,
+                notification="История номера отправлена",
+            )
             return
 
         if action == "attach_reply":

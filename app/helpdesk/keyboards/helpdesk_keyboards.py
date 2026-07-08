@@ -3,6 +3,7 @@
 from maxapi.types import ButtonsPayload, CallbackButton, RequestContactButton
 
 from app.helpdesk.models.ticket import Ticket, TicketStatus
+from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.repositories.location_repository import IssueCategoryRef
 from app.helpdesk.payloads import (
     ClarificationCancelPayload,
@@ -78,27 +79,39 @@ def build_main_menu_keyboard(
     return ButtonsPayload(buttons=buttons).pack()
 
 
-def build_jamaica_main_menu_keyboard():
+def build_jamaica_main_menu_keyboard(*, can_use_wifi_help: bool = False):
     """Собирает пользовательское меню Jamaica без выбора корпуса."""
 
-    return ButtonsPayload(
-        buttons=[
+    buttons = [
+        [
+            CallbackButton(
+                text="Заявка по номеру",
+                payload=UserMenuPayload(action="jamaica_room").pack(),
+            )
+        ],
+        [
+            CallbackButton(
+                text="Прочее",
+                payload=UserMenuPayload(action="jamaica_other").pack(),
+            )
+        ],
+    ]
+    if can_use_wifi_help:
+        buttons.append(
             [
                 CallbackButton(
-                    text="Заявка по номеру",
-                    payload=UserMenuPayload(action="jamaica_room").pack(),
+                    text="Проблема Wi-Fi у гостя",
+                    payload=UserMenuPayload(action="wifi").pack(),
                 )
-            ],
-            [
-                CallbackButton(
-                    text="Прочее",
-                    payload=UserMenuPayload(action="jamaica_other").pack(),
-                )
-            ],
+            ]
+        )
+    buttons.extend(
+        [
             [CallbackButton(text="Мои заявки", payload=UserMenuPayload(action="my").pack())],
             [CallbackButton(text="Помощь", payload=UserMenuPayload(action="help").pack())],
         ]
-    ).pack()
+    )
+    return ButtonsPayload(buttons=buttons).pack()
 
 
 def build_jamaica_issue_categories_keyboard(categories: tuple[IssueCategoryRef, ...]):
@@ -513,7 +526,11 @@ def build_attach_user_reply_keyboard(ticket_id: str):
     ).pack()
 
 
-def build_ticket_actions_keyboard(ticket_or_id: Ticket | str):
+def build_ticket_actions_keyboard(
+    ticket_or_id: Ticket | str,
+    *,
+    room_context: RoomTicketContext | None = None,
+):
     """Собирает кнопки действий специалиста по заявке."""
 
     if isinstance(ticket_or_id, Ticket):
@@ -523,6 +540,11 @@ def build_ticket_actions_keyboard(ticket_or_id: Ticket | str):
         ticket_id = str(ticket_or_id)
         status = None
 
+    has_room_history = bool(
+        room_context is not None
+        and room_context.hotel_id
+        and room_context.location_id is not None
+    )
     action_rows: list[list[CallbackButton]] = []
     if status == TicketStatus.CLOSED:
         action_rows = []
@@ -604,6 +626,19 @@ def build_ticket_actions_keyboard(ticket_or_id: Ticket | str):
                 )
             ],
         ]
+
+    if has_room_history:
+        action_rows.append(
+            [
+                CallbackButton(
+                    text="История номера",
+                    payload=SpecialistTicketPayload(
+                        action="room_history",
+                        ticket_id=ticket_id,
+                    ).pack(),
+                )
+            ]
+        )
 
     return ButtonsPayload(
         buttons=[

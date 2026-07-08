@@ -1,5 +1,6 @@
 import unittest
 
+from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.models.ticket import Ticket, TicketStatus
 from app.helpdesk.services.ticket_card_update_service import TicketCardUpdateService
 from app.helpdesk.services.ticket_clarification_service import TicketClarificationService
@@ -50,6 +51,14 @@ class FakeEvent:
 
     def _ensure_bot(self):
         return object()
+
+
+class FakeRoomContexts:
+    def __init__(self, context: RoomTicketContext | None = None) -> None:
+        self.context = context
+
+    def get_context(self, ticket_id: str) -> RoomTicketContext | None:
+        return self.context
 
 
 class TicketCardUpdateServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -123,10 +132,14 @@ class TicketCardUpdateServiceTests(unittest.IsolatedAsyncioTestCase):
         links = TicketLinkService()
         links.bind_group_message("T-00004", "old-primary", primary=True)
         max_messages = FakeMaxMessages()
+        room_contexts = FakeRoomContexts(
+            RoomTicketContext(ticket_key="T-00004", hotel_id=1, location_id=12)
+        )
         service = TicketCardUpdateService(
             ticket_links=links,
             group_chat_id=-100,
             max_messages=max_messages,
+            room_contexts=room_contexts,
         )
         ticket = Ticket(
             id="T-00004",
@@ -147,6 +160,7 @@ class TicketCardUpdateServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["notification"], "Заявка назначена на вас")
         self.assertIn("Статус: <b>в работе</b>", call["text"])
         self.assertEqual(call["attachments"][0].payload.buttons[0][0].text, "Освободить")
+        self.assertEqual(call["attachments"][0].payload.buttons[-2][0].text, "История номера")
         self.assertEqual(links.get_group_message_id("T-00004"), "callback-mid")
 
     async def test_updates_card_with_attached_user_reply_media_before_keyboard(self) -> None:

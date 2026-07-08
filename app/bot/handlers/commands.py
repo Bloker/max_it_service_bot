@@ -72,7 +72,9 @@ def _build_menu_for_user(user_id: int, cfg, access_registry):
     hotel_features = set(access_registry.get_hotel_features(hotel_code))
     is_service_actor = can_view_service
     if not is_service_actor and hotel_code == "jamaica":
-        return build_jamaica_main_menu_keyboard()
+        return build_jamaica_main_menu_keyboard(
+            can_use_wifi_help="wifi_guest_issue" in hotel_features,
+        )
     return build_main_menu_keyboard(
         can_create_ticket=True,
         can_view_my_tickets=True,

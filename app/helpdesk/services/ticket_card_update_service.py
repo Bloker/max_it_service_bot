@@ -56,7 +56,8 @@ class TicketCardUpdateService:
             attached_user_reply=self._get_attached_user_reply(ticket_id),
             closing_reply=self._get_closing_reply(ticket_id),
         )
-        keyboard = build_ticket_actions_keyboard(ticket)
+        room_context = self._get_room_context(ticket_id)
+        keyboard = build_ticket_actions_keyboard(ticket, room_context=room_context)
         attachments = self._build_card_attachments(ticket_id, keyboard)
 
         if group_message_id:
@@ -187,7 +188,8 @@ class TicketCardUpdateService:
             attached_user_reply=self._get_attached_user_reply(ticket_id),
             closing_reply=self._get_closing_reply(ticket_id),
         )
-        keyboard = build_ticket_actions_keyboard(ticket)
+        room_context = self._get_room_context(ticket_id)
+        keyboard = build_ticket_actions_keyboard(ticket, room_context=room_context)
         attachments = self._build_card_attachments(ticket_id, keyboard)
 
         updated = await self._max_messages.answer_callback_with_message(
