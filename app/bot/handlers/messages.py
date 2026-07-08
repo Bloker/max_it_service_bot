@@ -28,6 +28,7 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_clarification_cancel_keyboard,
     build_clarification_reply_keyboard,
     build_close_reply_cancel_keyboard,
+    build_jamaica_cancel_keyboard,
     build_jamaica_issue_categories_keyboard,
     build_jamaica_main_menu_keyboard,
     build_jamaica_room_not_found_keyboard,
@@ -2095,7 +2096,7 @@ def register(dp) -> None:
                 user_flow.reset(sender_id)
                 await event.message.answer(
                     text="Для этого отеля не настроены категории заявок.",
-                    attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
+                    attachments=[build_jamaica_cancel_keyboard()],
                 )
                 return
             user_flow.set_room_ticket_location(

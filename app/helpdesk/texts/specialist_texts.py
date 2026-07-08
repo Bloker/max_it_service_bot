@@ -21,6 +21,24 @@ def _format_phone_link(phone: str | None) -> str:
     return f'<a href="tel:{formatted_phone}">{formatted_phone}</a>'
 
 
+def _format_room_context_line(room_context: RoomTicketContext) -> str:
+    """Форматирует объект обслуживания одной строкой для карточки."""
+
+    location_display = room_context.location_display_snapshot or ""
+    normalized_display = location_display.lower()
+    if "домик" in normalized_display and room_context.room_number_snapshot:
+        object_text = f"Домик {escape(room_context.room_number_snapshot)}"
+    elif room_context.room_number_snapshot:
+        object_text = f"Номер {escape(room_context.room_number_snapshot)}"
+    elif location_display:
+        object_text = escape(location_display)
+    else:
+        object_text = "не указан"
+    if room_context.category_snapshot:
+        object_text = f"{object_text} ({escape(room_context.category_snapshot)})"
+    return f"Объект: {object_text}"
+
+
 def render_group_ticket(
     ticket: Ticket,
     *,
@@ -37,33 +55,23 @@ def render_group_ticket(
     requester_name = escape(ticket.requester_name or "Пользователь")
     phone = _format_phone_link(ticket.requester_phone)
     text = escape(ticket.text)
+    object_or_category_line = (
+        _format_room_context_line(room_context)
+        if room_context is not None
+        else f"Категория: {category}"
+    )
     card_text = (
         "🆘 Заявка IT Help Desk\n"
         f"ID: {escape(ticket.ticket_id)}\n"
         f"Статус: <b>{status}</b>\n"
         f"Исполнитель: <b>{assignee}</b>\n"
-        f"Категория: {category}\n"
-        f"Пользователь: {requester_name} (тел.: {phone})\n"
+        f"{object_or_category_line}\n"
+        f"Пользователь: {requester_name}\n"
+        f"Тел: {phone}\n"
         "\nОписание:\n"
         f"{text}"
     )
     blocks = [card_text]
-    if room_context is not None:
-        context_lines = ["Объект:"]
-        if room_context.location_display_snapshot:
-            context_lines.append(escape(room_context.location_display_snapshot))
-        elif room_context.room_number_snapshot:
-            context_lines.append(f"номер {escape(room_context.room_number_snapshot)}")
-        else:
-            context_lines.append("не указан")
-        if room_context.category_snapshot:
-            context_lines.extend(
-                [
-                    "Категория объекта:",
-                    escape(room_context.category_snapshot),
-                ]
-            )
-        blocks.append("\n".join(context_lines))
     if last_clarification is not None:
         clarification_author = escape(last_clarification.actor_name)
         clarification_text = escape(last_clarification.card_text)

@@ -104,17 +104,27 @@ def build_jamaica_main_menu_keyboard():
 def build_jamaica_issue_categories_keyboard(categories: tuple[IssueCategoryRef, ...]):
     """Собирает клавиатуру hotel-specific категорий по номеру."""
 
-    rows = [
-        [
-            CallbackButton(
-                text=category.title,
-                payload=UserMenuPayload(action="jamaica_cat", value=category.code).pack(),
-            )
+    return ButtonsPayload(
+        buttons=[
+            [
+                CallbackButton(
+                    text=category.title,
+                    payload=UserMenuPayload(action="jamaica_cat", value=category.code).pack(),
+                )
+            ]
+            for category in categories
         ]
-        for category in categories
-    ]
-    rows.append([CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())])
-    return ButtonsPayload(buttons=rows).pack()
+    ).pack()
+
+
+def build_jamaica_cancel_keyboard():
+    """Собирает клавиатуру отмены промежуточного шага Jamaica flow."""
+
+    return ButtonsPayload(
+        buttons=[
+            [CallbackButton(text="Отмена", payload=UserMenuPayload(action="jamaica_cancel").pack())]
+        ]
+    ).pack()
 
 
 def build_jamaica_room_not_found_keyboard():

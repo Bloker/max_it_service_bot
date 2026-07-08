@@ -103,16 +103,90 @@ Future UX target:
 Building buttons are intentionally not needed. User enters only room/cottage number,
 then the bot resolves hotel/building/location by `(hotel_id, room_number)`.
 
-## Stage 2 Backlog
+## Stage 2.1 Status
 
-Implement later:
+Статус: локально стабилизировано, test-only, production unchanged.
+
+Git / rollout status:
 
 ```text
-hotel-specific Jamaica menu
-"Заявка по номеру" button
-lookup location by hotel_id + room_number
-category choice from helpdesk.hotel_issue_categories
-ticket_context write during ticket creation
-ticket card render with location/category
-manual smoke on test bot before production rollout
+base local commit: 5c65675 add jamaica test room ticket flow
+production changed: no
+production commit: fadf6d3 add integration observability events
+test DB: test_dev_max
+```
+
+Текущее UX-поведение Jamaica flow:
+
+```text
+Главное меню:
+  [Заявка по номеру]
+  [Прочее]
+  [Мои заявки]
+  [Помощь]
+
+После "Заявка по номеру":
+  текстовый ввод номера
+  только кнопка [Отмена]
+
+После найденного номера:
+  кнопки категорий из БД:
+    ТВ
+    Телефония
+    Интернет
+    Замок
+    Прочее
+  без кнопки "Главное меню"
+
+После выбора категории:
+  запрос описания
+  только кнопка [Отмена]
+
+Неизвестный номер:
+  "Такого номера не существует"
+  [Ввести заново]
+  [Создать как Прочее]
+  [Главное меню]
+```
+
+Формат Jamaica room-ticket карточки в группе:
+
+```text
+Статус: ...
+Исполнитель: ...
+Объект: Номер 112 (ТВ)
+Пользователь: ...
+Тел: +7...
+Описание:
+...
+```
+
+Правила карточки:
+
+```text
+отдельная строка "Категория" не выводится, если есть ticket_context;
+нижний блок "Объект / Категория объекта" убран;
+для домиков формат:
+  Объект: Домик 15 (Интернет)
+если телефона нет:
+  Тел: не указан
+если ticket_context отсутствует:
+  legacy fallback карточки сохраняется
+```
+
+Проверки Stage 2.1:
+
+```text
+compileall: OK
+unittest: OK
+reconciliation test_dev_max: expected clean
+ticket_context latest rows checked read-only
+manual smoke by Codex in this run: not executed
+manual smoke через тестового MAX-бота все еще обязателен перед production rollout
+```
+
+## Next Stage
+
+```text
+История номера по location_id
 ```

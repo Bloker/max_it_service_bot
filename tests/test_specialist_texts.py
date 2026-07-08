@@ -97,11 +97,8 @@ class SpecialistTextsTests(unittest.TestCase):
 
         text = render_group_ticket(ticket)
 
-        self.assertIn(
-            'Пользователь: ID 101 (тел.: <a href="tel:+79530853578">'
-            "+79530853578</a>)",
-            text,
-        )
+        self.assertIn("Пользователь: ID 101\n", text)
+        self.assertIn('Тел: <a href="tel:+79530853578">+79530853578</a>', text)
 
     def test_render_group_ticket_formats_ru_phone_link_variants(self) -> None:
         cases = [
@@ -139,7 +136,7 @@ class SpecialistTextsTests(unittest.TestCase):
 
         text = render_group_ticket(ticket)
 
-        self.assertIn("Пользователь: ID 101 (тел.: не указан)", text)
+        self.assertIn("Пользователь: ID 101\nТел: не указан", text)
         self.assertNotIn('href="tel:', text)
 
     def test_render_group_ticket_escapes_text_with_phone_link(self) -> None:
@@ -201,10 +198,47 @@ class SpecialistTextsTests(unittest.TestCase):
 
         text = render_group_ticket(ticket, room_context=context)
 
-        self.assertIn("Объект:", text)
-        self.assertIn("Корпус &lt;2&gt;, номер 2105", text)
-        self.assertIn("Категория объекта:", text)
-        self.assertIn("Интернет &amp; Wi-Fi", text)
+        self.assertIn("Объект: Номер 2105 (Интернет &amp; Wi-Fi)", text)
+        self.assertNotIn("Категория: Интернет", text)
+        self.assertNotIn("Категория объекта:", text)
+
+    def test_render_group_ticket_uses_location_display_when_room_is_missing(self) -> None:
+        ticket = Ticket(
+            id="T-00001",
+            user_id=101,
+            category="Прочее",
+            text="Нужна помощь",
+        )
+        context = RoomTicketContext(
+            ticket_key="T-00001",
+            hotel_id=1,
+            location_display_snapshot="Домик <A>",
+            category_snapshot="Прочее",
+        )
+
+        text = render_group_ticket(ticket, room_context=context)
+
+        self.assertIn("Объект: Домик &lt;A&gt; (Прочее)", text)
+
+    def test_render_group_ticket_formats_cottage_room_context(self) -> None:
+        ticket = Ticket(
+            id="T-00001",
+            user_id=101,
+            category="Интернет",
+            text="Нет доступа",
+        )
+        context = RoomTicketContext(
+            ticket_key="T-00001",
+            hotel_id=1,
+            room_number_snapshot="15",
+            location_display_snapshot="Джамайка · Домик 15",
+            category_snapshot="Интернет",
+        )
+
+        text = render_group_ticket(ticket, room_context=context)
+
+        self.assertIn("Объект: Домик 15 (Интернет)", text)
+        self.assertNotIn("Объект: Номер 15", text)
 
     def test_render_ticket_closed_notification_formats_created_date(self) -> None:
         ticket = Ticket(

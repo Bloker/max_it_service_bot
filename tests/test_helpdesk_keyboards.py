@@ -7,6 +7,7 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_clarification_reply_keyboard,
     build_close_reply_cancel_keyboard,
     build_jamaica_issue_categories_keyboard,
+    build_jamaica_cancel_keyboard,
     build_jamaica_main_menu_keyboard,
     build_jamaica_room_not_found_keyboard,
     build_main_menu_keyboard,
@@ -80,7 +81,7 @@ class HelpdeskKeyboardTests(unittest.TestCase):
         self.assertEqual(keyboard.payload.buttons[0][0].payload, "usr|jamaica_cat|tv")
         self.assertEqual(keyboard.payload.buttons[1][0].text, "Прочее")
         self.assertEqual(keyboard.payload.buttons[1][0].payload, "usr|jamaica_cat|other")
-        self.assertEqual(keyboard.payload.buttons[-1][0].payload, "usr|menu|")
+        self.assertEqual(len(keyboard.payload.buttons), 2)
 
     def test_jamaica_room_not_found_keyboard_allows_retry_other_and_menu(self) -> None:
         keyboard = build_jamaica_room_not_found_keyboard()
@@ -92,6 +93,14 @@ class HelpdeskKeyboardTests(unittest.TestCase):
             payloads,
             ["usr|jamaica_room_retry|", "usr|jamaica_other|", "usr|menu|"],
         )
+
+    def test_jamaica_cancel_keyboard_has_only_cancel_button(self) -> None:
+        keyboard = build_jamaica_cancel_keyboard()
+
+        buttons = keyboard.payload.buttons
+        self.assertEqual(len(buttons), 1)
+        self.assertEqual(buttons[0][0].text, "Отмена")
+        self.assertEqual(buttons[0][0].payload, "usr|jamaica_cancel|")
 
     def test_clarification_cancel_keyboard_contains_ticket_payload(self) -> None:
         keyboard = build_clarification_cancel_keyboard("T-00001")

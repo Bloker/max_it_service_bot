@@ -100,6 +100,25 @@ class UserFlowServiceTests(unittest.TestCase):
         self.assertIsNone(draft.location_id)
         self.assertIsNone(draft.issue_category_id)
 
+    def test_begin_room_ticket_other_keeps_hotel_and_has_no_location(self) -> None:
+        user_id = 606
+
+        draft = self.service.begin_room_ticket_other(
+            user_id,
+            hotel_id=10,
+            hotel_code="jamaica",
+            category_id=50,
+            category_code="other",
+            category_title="Прочее",
+        )
+
+        self.assertEqual("awaiting_problem_text", draft.step)
+        self.assertEqual("Прочее", draft.category)
+        self.assertEqual(10, draft.hotel_id)
+        self.assertIsNone(draft.location_id)
+        self.assertIsNone(draft.room_number)
+        self.assertEqual(50, draft.issue_category_id)
+
 
 if __name__ == "__main__":
     unittest.main()

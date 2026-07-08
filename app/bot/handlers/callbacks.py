@@ -29,6 +29,7 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_clarification_cancel_keyboard,
     build_close_reply_cancel_keyboard,
     build_categories_keyboard,
+    build_jamaica_cancel_keyboard,
     build_jamaica_main_menu_keyboard,
     build_main_menu_keyboard,
     build_open_tickets_keyboard,
@@ -330,7 +331,7 @@ def register(dp) -> None:
         )
         await event.message.answer(
             text="Введите номер комнаты или домика.",
-            attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+            attachments=[build_jamaica_cancel_keyboard()],
         )
         await event.answer(notification="Введите номер")
 
@@ -362,7 +363,7 @@ def register(dp) -> None:
                 "и фото/файл.\nЧерез 20 секунд после последнего сообщения "
                 "обращение отправится автоматически."
             ),
-            attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+            attachments=[build_jamaica_cancel_keyboard()],
         )
         await event.answer(notification="Опишите проблему")
 
@@ -460,6 +461,15 @@ def register(dp) -> None:
             await _start_jamaica_room_ticket(event, user_id)
             return
 
+        if action == "jamaica_cancel":
+            user_flow.reset(user_id)
+            await event.message.answer(
+                text=user_texts.WELCOME_TEXT,
+                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+            )
+            await event.answer(notification="Отменено")
+            return
+
         if action == "jamaica_other":
             await _start_jamaica_other_ticket(event, user_id)
             return
@@ -492,7 +502,7 @@ def register(dp) -> None:
                     "и фото/файл.\nЧерез 20 секунд после последнего сообщения "
                     "обращение отправится автоматически."
                 ),
-                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+                attachments=[build_jamaica_cancel_keyboard()],
             )
             await event.answer(notification="Опишите проблему")
             return
