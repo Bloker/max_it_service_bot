@@ -290,3 +290,18 @@ history button preserved after status changes: OK
 Stage 3.1: локальный commit без push;
 после отдельной команды владельца — следующий hotel-specific UX шаг
 ```
+
+## Stage 4.3 KB Note Integration
+
+```text
+Для Jamaica room-ticket кнопка «Заметка» использует два шага: тема -> текст.
+После сохранения создается простая активная KB-запись в scope «Джамайка» и
+категории заявки. Связь с заявкой хранится в source_ticket_key,
+source_location_id и ticket_comments.meta, без ticket_knowledge_links.
+
+В карточке KB не показываются source_ticket_key, source_location_id, объект,
+источник, статус или техническая metadata. В карточке заявки блок «Последняя
+заметка» содержит только тему и preview текста.
+
+Статус: local/test-only. Production не изменялся.
+```

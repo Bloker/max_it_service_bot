@@ -10,10 +10,18 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_jamaica_cancel_keyboard,
     build_jamaica_main_menu_keyboard,
     build_jamaica_room_not_found_keyboard,
+    build_knowledge_add_category_keyboard,
+    build_knowledge_add_scope_keyboard,
+    build_knowledge_article_view_keyboard,
+    build_knowledge_articles_keyboard,
+    build_knowledge_base_menu_keyboard,
+    build_knowledge_scope_keyboard,
     build_main_menu_keyboard,
     build_open_tickets_keyboard,
     build_ticket_actions_keyboard,
+    format_kb_button_title,
 )
+from app.helpdesk.models.knowledge_base import KnowledgeScope, KnowledgeScopeType
 from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.repositories.location_repository import IssueCategoryRef
 from app.helpdesk.models.ticket import Ticket, TicketStatus
@@ -45,11 +53,13 @@ class HelpdeskKeyboardTests(unittest.TestCase):
             can_view_help=False,
             can_use_network_tools=True,
             is_admin=True,
+            can_use_knowledge_base=True,
         )
 
         all_labels = [button.text for row in keyboard.payload.buttons for button in row]
         self.assertEqual(keyboard.payload.buttons[0][0].text, "Создать обращение")
         self.assertIn("Сетевые инструменты", all_labels)
+        self.assertIn("База знаний", all_labels)
         self.assertIn("Права администратора", all_labels)
 
     def test_categories_keyboard_has_main_menu_button(self) -> None:
@@ -118,6 +128,86 @@ class HelpdeskKeyboardTests(unittest.TestCase):
         self.assertEqual(buttons[0][0].text, "Отмена")
         self.assertEqual(buttons[0][0].payload, "usr|jamaica_cancel|")
 
+    def test_knowledge_base_menu_keyboard_shows_scopes_and_main(self) -> None:
+        keyboard = build_knowledge_base_menu_keyboard(
+            (
+                KnowledgeScope(1, "jamaica", "Джамайка", KnowledgeScopeType.HOTEL),
+                KnowledgeScope(2, "general_it", "Общее IT", KnowledgeScopeType.GLOBAL),
+            )
+        )
+
+        labels = [row[0].text for row in keyboard.payload.buttons]
+        self.assertEqual(labels, ["Джамайка", "Общее IT", "Главное меню"])
+        self.assertEqual(keyboard.payload.buttons[0][0].payload, "usr|kb_scope|1")
+
+    def test_knowledge_scope_keyboard_has_add_back_to_scopes_and_main(self) -> None:
+        keyboard = build_knowledge_scope_keyboard(
+            1,
+            (
+                IssueCategoryRef(10, "internet", "Интернет", True, 30),
+                IssueCategoryRef(20, "tv", "ТВ", True, 10),
+            ),
+        )
+
+        labels = [row[0].text for row in keyboard.payload.buttons]
+        self.assertEqual(labels[-3:], ["Добавить запись", "Назад к разделам", "Главное меню"])
+        self.assertEqual(keyboard.payload.buttons[0][0].payload, "usr|kb_cat|1:10")
+        self.assertEqual(keyboard.payload.buttons[-3][0].payload, "usr|kb_add_scope|1")
+
+    def test_knowledge_articles_keyboard_has_back_to_categories(self) -> None:
+        keyboard = build_knowledge_articles_keyboard(
+            1,
+            10,
+            (
+                (101, "Нет гудка"),
+                (102, "Очень длинная тема для статьи в базе знаний, которую нужно сократить"),
+            ),
+        )
+
+        labels = [row[0].text for row in keyboard.payload.buttons]
+        self.assertEqual(
+            labels,
+            [
+                "Нет гудка",
+                "Очень длинная тема для статьи в баз…",
+                "Назад к категориям",
+                "Главное меню",
+            ],
+        )
+        self.assertEqual(keyboard.payload.buttons[1][0].payload, "usr|kb_article|1:10:102")
+
+    def test_format_kb_button_title_truncates_long_values(self) -> None:
+        title = format_kb_button_title(
+            "Не открывается страница авторизации Wi-Fi на телефоне гостя"
+        )
+
+        self.assertEqual(title, "Не открывается страница авторизации…")
+
+    def test_knowledge_article_view_keyboard_has_back_to_category(self) -> None:
+        keyboard = build_knowledge_article_view_keyboard(1, 10)
+
+        self.assertEqual(keyboard.payload.buttons[0][0].text, "Назад к категории")
+        self.assertEqual(keyboard.payload.buttons[0][0].payload, "usr|kb_cat|1:10")
+
+    def test_knowledge_add_scope_keyboard_has_cancel(self) -> None:
+        keyboard = build_knowledge_add_scope_keyboard(
+            (KnowledgeScope(1, "jamaica", "Джамайка", KnowledgeScopeType.HOTEL),)
+        )
+
+        labels = [row[0].text for row in keyboard.payload.buttons]
+        self.assertEqual(labels, ["Джамайка", "Отмена"])
+        self.assertEqual(keyboard.payload.buttons[0][0].payload, "usr|kb_add_scope|1")
+
+    def test_knowledge_add_category_keyboard_has_back_and_cancel(self) -> None:
+        keyboard = build_knowledge_add_category_keyboard(
+            1,
+            (IssueCategoryRef(10, "internet", "Интернет", True, 30),),
+        )
+
+        labels = [row[0].text for row in keyboard.payload.buttons]
+        self.assertEqual(labels, ["Интернет", "Назад к разделам", "Отмена"])
+        self.assertEqual(keyboard.payload.buttons[0][0].payload, "usr|kb_add_cat|1:10")
+
     def test_clarification_cancel_keyboard_contains_ticket_payload(self) -> None:
         keyboard = build_clarification_cancel_keyboard("T-00001")
 
@@ -174,12 +264,8 @@ class HelpdeskKeyboardTests(unittest.TestCase):
 
         self.assertEqual(buttons[0][0].text, "Взять в работу")
         self.assertEqual(buttons[0][0].payload, "spc|take|T-00001")
-        self.assertEqual(
-            [button.text for button in buttons[1]],
-            ["Запросить уточнение", "Закрыть"],
-        )
-        self.assertEqual(buttons[2][0].text, "Закрыть с ответом")
-        self.assertEqual(buttons[2][0].payload, "spc|close_with_reply|T-00001")
+        self.assertEqual(buttons[1][0].text, "Заметка")
+        self.assertEqual(buttons[1][0].payload, "spc|comment|T-00001")
         self.assertEqual(buttons[-1][0].text, "Не закрытые заявки")
 
     def test_ticket_actions_keyboard_adds_room_history_for_room_ticket(self) -> None:
@@ -190,7 +276,7 @@ class HelpdeskKeyboardTests(unittest.TestCase):
 
         labels = [button.text for row in keyboard.payload.buttons for button in row]
         self.assertIn("История номера", labels)
-        history_button = keyboard.payload.buttons[-2][0]
+        history_button = keyboard.payload.buttons[1][1]
         self.assertEqual(history_button.text, "История номера")
         self.assertEqual(history_button.payload, "spc|room_history|T-00088")
 
@@ -213,7 +299,25 @@ class HelpdeskKeyboardTests(unittest.TestCase):
         self.assertEqual(buttons[1][0].text, "Закрыть с ответом")
         self.assertEqual(buttons[1][0].payload, "spc|close_with_reply|T-00002")
         self.assertEqual(buttons[2][0].text, "Запросить уточнение")
+        self.assertEqual(buttons[3][0].text, "Заметка")
         self.assertEqual(buttons[-1][0].text, "Не закрытые заявки")
+
+    def test_ticket_actions_keyboard_places_note_and_history_in_one_row(self) -> None:
+        ticket = Ticket(
+            id="T-00004",
+            user_id=104,
+            category="ТВ",
+            text="Four",
+            status=TicketStatus.IN_PROGRESS,
+        )
+        room_context = RoomTicketContext(ticket_key="T-00004", hotel_id=1, location_id=12)
+
+        keyboard = build_ticket_actions_keyboard(ticket, room_context=room_context)
+
+        self.assertEqual(
+            [button.text for button in keyboard.payload.buttons[3]],
+            ["Заметка", "История номера"],
+        )
 
     def test_ticket_actions_keyboard_keeps_room_history_for_closed_ticket(self) -> None:
         ticket = Ticket(

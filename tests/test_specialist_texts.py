@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.models.ticket import Ticket, TicketStatus
+from app.helpdesk.services.knowledge_base_service import TicketSpecialistComment
 from app.helpdesk.services.ticket_clarification_service import TicketClarificationService
 from app.helpdesk.texts.specialist_texts import render_group_ticket, render_open_tickets_list
 from app.helpdesk.texts.user_texts import render_ticket_closed_notification
@@ -201,6 +202,28 @@ class SpecialistTextsTests(unittest.TestCase):
         self.assertIn("Объект: Номер 2105 (Интернет &amp; Wi-Fi)", text)
         self.assertNotIn("Категория: Интернет", text)
         self.assertNotIn("Категория объекта:", text)
+
+    def test_render_group_ticket_includes_last_specialist_comment(self) -> None:
+        ticket = Ticket(
+            id="T-00021",
+            user_id=101,
+            category="Интернет",
+            text="Нет интернета",
+        )
+        comment = TicketSpecialistComment(
+            ticket_id="T-00021",
+            actor_user_id=55,
+            actor_name="Дмитрий <IT>",
+            title="Нет гудка",
+            text="Проверен uplink & перезапущен access point",
+            created_at=datetime.now(timezone.utc),
+        )
+
+        text = render_group_ticket(ticket, last_specialist_comment=comment)
+
+        self.assertIn("Последняя заметка:", text)
+        self.assertIn("Нет гудка", text)
+        self.assertIn("Проверен uplink &amp; перезапущен access point", text)
 
     def test_render_group_ticket_uses_location_display_when_room_is_missing(self) -> None:
         ticket = Ticket(

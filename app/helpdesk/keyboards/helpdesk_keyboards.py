@@ -4,10 +4,12 @@ from maxapi.types import ButtonsPayload, CallbackButton, RequestContactButton
 
 from app.helpdesk.models.ticket import Ticket, TicketStatus
 from app.helpdesk.models.room_ticket_context import RoomTicketContext
+from app.helpdesk.models.knowledge_base import KnowledgeScope
 from app.helpdesk.repositories.location_repository import IssueCategoryRef
 from app.helpdesk.payloads import (
     ClarificationCancelPayload,
     CloseReplyCancelPayload,
+    KnowledgeCommentCancelPayload,
     SpecialistTicketPayload,
     UserMenuPayload,
 )
@@ -24,6 +26,7 @@ def build_main_menu_keyboard(
     is_admin: bool = False,
     can_use_wifi_help: bool = False,
     can_use_tv_help: bool = False,
+    can_use_knowledge_base: bool = False,
 ):
     """Собирает главное меню с учетом роли и доступных функций."""
 
@@ -62,6 +65,16 @@ def build_main_menu_keyboard(
                 CallbackButton(
                     text="Сетевые инструменты",
                     payload=UserMenuPayload(action="network").pack(),
+                )
+            ]
+        )
+
+    if can_use_knowledge_base:
+        buttons.append(
+            [
+                CallbackButton(
+                    text="База знаний",
+                    payload=UserMenuPayload(action="kb").pack(),
                 )
             ]
         )
@@ -475,6 +488,16 @@ def build_clarification_cancel_keyboard(ticket_id: str):
     ).pack()
 
 
+def build_comment_cancel_keyboard(ticket_id: str):
+    """Собирает клавиатуру отмены ввода комментария специалиста."""
+
+    return ButtonsPayload(
+        buttons=[
+            [CallbackButton(text="Отмена", payload=KnowledgeCommentCancelPayload(ticket_id=ticket_id).pack())]
+        ]
+    ).pack()
+
+
 def build_clarification_reply_keyboard(ticket_id: str):
     """Собирает кнопку ответа пользователя на уточнение."""
 
@@ -545,7 +568,7 @@ def build_ticket_actions_keyboard(
         and room_context.hotel_id
         and room_context.location_id is not None
     )
-    action_rows: list[list[CallbackButton]] = []
+    action_rows: list[list[CallbackButton]]
     if status == TicketStatus.CLOSED:
         action_rows = []
     elif status == TicketStatus.IN_PROGRESS:
@@ -575,6 +598,12 @@ def build_ticket_actions_keyboard(
                     payload=SpecialistTicketPayload(action="clarify", ticket_id=ticket_id).pack(),
                 )
             ],
+            [
+                CallbackButton(
+                    text="Заметка",
+                    payload=SpecialistTicketPayload(action="comment", ticket_id=ticket_id).pack(),
+                )
+            ],
         ]
     elif status == TicketStatus.WAITING_USER:
         action_rows = [
@@ -597,6 +626,12 @@ def build_ticket_actions_keyboard(
                     ).pack(),
                 )
             ],
+            [
+                CallbackButton(
+                    text="Заметка",
+                    payload=SpecialistTicketPayload(action="comment", ticket_id=ticket_id).pack(),
+                )
+            ],
         ]
     else:
         action_rows = [
@@ -608,37 +643,24 @@ def build_ticket_actions_keyboard(
             ],
             [
                 CallbackButton(
-                    text="Запросить уточнение",
-                    payload=SpecialistTicketPayload(action="clarify", ticket_id=ticket_id).pack(),
-                ),
-                CallbackButton(
-                    text="Закрыть",
-                    payload=SpecialistTicketPayload(action="close", ticket_id=ticket_id).pack(),
-                ),
-            ],
-            [
-                CallbackButton(
-                    text="Закрыть с ответом",
-                    payload=SpecialistTicketPayload(
-                        action="close_with_reply",
-                        ticket_id=ticket_id,
-                    ).pack(),
+                    text="Заметка",
+                    payload=SpecialistTicketPayload(action="comment", ticket_id=ticket_id).pack(),
                 )
             ],
         ]
 
     if has_room_history:
-        action_rows.append(
-            [
-                CallbackButton(
-                    text="История номера",
-                    payload=SpecialistTicketPayload(
-                        action="room_history",
-                        ticket_id=ticket_id,
-                    ).pack(),
-                )
-            ]
+        history_button = CallbackButton(
+            text="История номера",
+            payload=SpecialistTicketPayload(
+                action="room_history",
+                ticket_id=ticket_id,
+            ).pack(),
         )
+        if status != TicketStatus.CLOSED:
+            action_rows[-1].append(history_button)
+        else:
+            action_rows.append([history_button])
 
     return ButtonsPayload(
         buttons=[
@@ -651,6 +673,157 @@ def build_ticket_actions_keyboard(
             ],
         ]
     ).pack()
+
+
+def build_knowledge_base_menu_keyboard(scopes: tuple[KnowledgeScope, ...]):
+    """Собирает стартовую клавиатуру разделов базы знаний."""
+
+    rows = [
+        [
+            CallbackButton(
+                text=scope.title,
+                payload=UserMenuPayload(action="kb_scope", value=str(scope.id)).pack(),
+            )
+        ]
+        for scope in scopes
+    ]
+    rows.append([CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())])
+    return ButtonsPayload(buttons=rows).pack()
+
+
+def build_knowledge_scope_keyboard(scope_id: int, categories: tuple[IssueCategoryRef, ...]):
+    """Собирает клавиатуру выбора категории внутри раздела KB."""
+
+    rows = [
+        [
+            CallbackButton(
+                text=category.title,
+                payload=UserMenuPayload(
+                    action="kb_cat",
+                    value=f"{scope_id}:{category.id}",
+                ).pack(),
+            )
+        ]
+        for category in categories
+    ]
+    rows.append(
+        [
+            CallbackButton(
+                text="Добавить запись",
+                payload=UserMenuPayload(action="kb_add_scope", value=str(scope_id)).pack(),
+            )
+        ]
+    )
+    rows.append([CallbackButton(text="Назад к разделам", payload=UserMenuPayload(action="kb").pack())])
+    rows.append([CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())])
+    return ButtonsPayload(buttons=rows).pack()
+
+
+def build_knowledge_articles_keyboard(
+    scope_id: int,
+    category_id: int,
+    article_items: tuple[tuple[int, str], ...],
+):
+    """Собирает клавиатуру выбора статьи внутри категории."""
+
+    rows = [
+        [
+            CallbackButton(
+                text=format_kb_button_title(title),
+                payload=UserMenuPayload(
+                    action="kb_article",
+                    value=f"{scope_id}:{category_id}:{article_id}",
+                ).pack(),
+            )
+        ]
+        for article_id, title in article_items
+    ]
+    rows.append(
+        [
+            CallbackButton(
+                text="Назад к категориям",
+                payload=UserMenuPayload(action="kb_scope", value=str(scope_id)).pack(),
+            )
+        ]
+    )
+    rows.append([CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())])
+    return ButtonsPayload(buttons=rows).pack()
+
+
+def build_knowledge_article_view_keyboard(scope_id: int, category_id: int):
+    """Собирает клавиатуру экрана одной статьи KB."""
+
+    return ButtonsPayload(
+        buttons=[
+            [
+                CallbackButton(
+                    text="Назад к категории",
+                    payload=UserMenuPayload(
+                        action="kb_cat",
+                        value=f"{scope_id}:{category_id}",
+                    ).pack(),
+                )
+            ],
+            [CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())],
+        ]
+    ).pack()
+
+
+def build_knowledge_add_scope_keyboard(scopes: tuple[KnowledgeScope, ...]):
+    """Собирает клавиатуру выбора раздела для добавления записи."""
+
+    rows = [
+        [
+            CallbackButton(
+                text=scope.title,
+                payload=UserMenuPayload(action="kb_add_scope", value=str(scope.id)).pack(),
+            )
+        ]
+        for scope in scopes
+    ]
+    rows.append([CallbackButton(text="Отмена", payload=UserMenuPayload(action="kb_cancel").pack())])
+    return ButtonsPayload(buttons=rows).pack()
+
+
+def build_knowledge_add_category_keyboard(scope_id: int, categories: tuple[IssueCategoryRef, ...]):
+    """Собирает клавиатуру выбора категории при добавлении записи."""
+
+    rows = [
+        [
+            CallbackButton(
+                text=category.title,
+                payload=UserMenuPayload(
+                    action="kb_add_cat",
+                    value=f"{scope_id}:{category.id}",
+                ).pack(),
+            )
+        ]
+        for category in categories
+    ]
+    rows.append([CallbackButton(text="Назад к разделам", payload=UserMenuPayload(action="kb_add").pack())])
+    rows.append([CallbackButton(text="Отмена", payload=UserMenuPayload(action="kb_cancel").pack())])
+    return ButtonsPayload(buttons=rows).pack()
+
+
+def build_knowledge_cancel_keyboard():
+    """Собирает клавиатуру отмены ручного ввода статьи KB."""
+
+    return ButtonsPayload(
+        buttons=[
+            [CallbackButton(text="Отмена", payload=UserMenuPayload(action="kb_cancel").pack())]
+        ]
+    ).pack()
+
+
+def format_kb_button_title(title: str, *, max_len: int = 36) -> str:
+    """Обрезает длинные заголовки тем для кнопок KB."""
+
+    normalized = (title or "").strip()
+    if len(normalized) <= max_len:
+        return normalized
+    if max_len <= 1:
+        return "…"
+    return f"{normalized[: max_len - 1].rstrip()}…"
 
 
 def build_open_tickets_keyboard(tickets, *, max_buttons: int = 20):

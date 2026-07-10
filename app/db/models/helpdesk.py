@@ -132,9 +132,84 @@ class TicketAttachment(Base):
     )
 
 
+class KnowledgeArticle(Base):
+    """Статья базы знаний HelpDesk."""
+
+    __tablename__ = "knowledge_articles"
+    __table_args__ = (
+        Index(
+            "idx_knowledge_articles_scope_category_active",
+            "scope_id",
+            "category_id",
+            "is_active",
+            "sort_order",
+            "created_at",
+        ),
+        Index("idx_helpdesk_knowledge_articles_source_ticket", "source_ticket_key"),
+        Index("idx_helpdesk_knowledge_articles_source_location", "source_location_id"),
+        {"schema": "helpdesk"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    scope_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("helpdesk.knowledge_scopes.id"),
+        nullable=False,
+    )
+    hotel_id: Mapped[int | None] = mapped_column(BigInteger)
+    category_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    source_ticket_key: Mapped[str | None] = mapped_column(Text)
+    source_location_id: Mapped[int | None] = mapped_column(BigInteger)
+    author_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+class KnowledgeScope(Base):
+    """Раздел верхнего уровня для базы знаний."""
+
+    __tablename__ = "knowledge_scopes"
+    __table_args__ = (
+        Index("idx_helpdesk_knowledge_scopes_active_sort", "is_active", "sort_order"),
+        {"schema": "helpdesk"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    code: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    scope_type: Mapped[str] = mapped_column(Text, nullable=False)
+    hotel_id: Mapped[int | None] = mapped_column(BigInteger)
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
 __all__ = [
+    "KnowledgeScope",
     "Ticket",
     "TicketAttachment",
     "TicketComment",
     "TicketEvent",
+    "KnowledgeArticle",
 ]

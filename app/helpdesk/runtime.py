@@ -7,6 +7,11 @@ from app.helpdesk.repositories.sqlite_ticket_repository import SqliteTicketRepos
 from app.helpdesk.services.postgres_ticket_link_service import PostgresTicketLinkService
 from app.helpdesk.services.clarification_session_service import ClarificationSessionService
 from app.helpdesk.services.close_reply_session_service import CloseReplySessionService
+from app.helpdesk.services.knowledge_article_create_session_service import (
+    KnowledgeArticleCreateSessionService,
+)
+from app.helpdesk.services.knowledge_base_service import KnowledgeBaseService
+from app.helpdesk.services.knowledge_comment_session_service import KnowledgeCommentSessionService
 from app.helpdesk.services.ticket_clarification_service import TicketClarificationService
 from app.helpdesk.services.room_history_service import RoomHistoryService
 from app.helpdesk.services.ticket_link_service import TicketLinkService
@@ -22,6 +27,9 @@ _user_flow_service: UserFlowService | None = None
 _ticket_link_service: TicketLinkService | PostgresTicketLinkService | None = None
 _clarification_session_service: ClarificationSessionService | None = None
 _close_reply_session_service: CloseReplySessionService | None = None
+_knowledge_comment_session_service: KnowledgeCommentSessionService | None = None
+_knowledge_article_create_session_service: KnowledgeArticleCreateSessionService | None = None
+_knowledge_base_service: KnowledgeBaseService | None = None
 _ticket_clarification_service: TicketClarificationService | None = None
 _user_reply_session_service: UserReplySessionService | None = None
 _room_ticket_context_service = None
@@ -141,6 +149,24 @@ def get_close_reply_session_service() -> CloseReplySessionService:
     return _close_reply_session_service
 
 
+def get_knowledge_comment_session_service() -> KnowledgeCommentSessionService:
+    """Возвращает singleton сессий ввода комментария специалиста."""
+
+    global _knowledge_comment_session_service
+    if _knowledge_comment_session_service is None:
+        _knowledge_comment_session_service = KnowledgeCommentSessionService()
+    return _knowledge_comment_session_service
+
+
+def get_knowledge_article_create_session_service() -> KnowledgeArticleCreateSessionService:
+    """Возвращает singleton сессий ручного добавления KB-статей."""
+
+    global _knowledge_article_create_session_service
+    if _knowledge_article_create_session_service is None:
+        _knowledge_article_create_session_service = KnowledgeArticleCreateSessionService()
+    return _knowledge_article_create_session_service
+
+
 def get_ticket_clarification_service() -> TicketClarificationService:
     """Возвращает singleton последних уточнений для карточек заявок."""
 
@@ -164,6 +190,66 @@ def get_ticket_clarification_service() -> TicketClarificationService:
             )
         _ticket_clarification_service = TicketClarificationService(repository=repository)
     return _ticket_clarification_service
+
+
+def get_knowledge_base_service() -> KnowledgeBaseService:
+    """Возвращает singleton базы знаний для PostgreSQL backend."""
+
+    global _knowledge_base_service
+    if _knowledge_base_service is not None:
+        return _knowledge_base_service
+
+    cfg = get_config()
+    if cfg.tickets.backend != "postgres":
+        _knowledge_base_service = KnowledgeBaseService()
+        return _knowledge_base_service
+
+    from app.helpdesk.repositories.postgres_knowledge_base_repository import (
+        PostgresKnowledgeBaseRepository,
+    )
+    from app.helpdesk.repositories.postgres_location_repository import (
+        PostgresLocationRepository,
+    )
+    from app.helpdesk.repositories.postgres_ticket_context_repository import (
+        PostgresTicketContextRepository,
+    )
+    from app.helpdesk.services.location_service import LocationService
+
+    knowledge_repository = PostgresKnowledgeBaseRepository(
+        host=cfg.tickets.postgres_host,
+        port=cfg.tickets.postgres_port,
+        database=cfg.tickets.postgres_db,
+        user=cfg.tickets.postgres_user,
+        password=cfg.tickets.postgres_password,
+        sslmode=cfg.tickets.postgres_sslmode,
+        connect_timeout_sec=cfg.tickets.postgres_connect_timeout_sec,
+    )
+    ticket_contexts = PostgresTicketContextRepository(
+        host=cfg.tickets.postgres_host,
+        port=cfg.tickets.postgres_port,
+        database=cfg.tickets.postgres_db,
+        user=cfg.tickets.postgres_user,
+        password=cfg.tickets.postgres_password,
+        sslmode=cfg.tickets.postgres_sslmode,
+        connect_timeout_sec=cfg.tickets.postgres_connect_timeout_sec,
+    )
+    locations = LocationService(
+        PostgresLocationRepository(
+            host=cfg.tickets.postgres_host,
+            port=cfg.tickets.postgres_port,
+            database=cfg.tickets.postgres_db,
+            user=cfg.tickets.postgres_user,
+            password=cfg.tickets.postgres_password,
+            sslmode=cfg.tickets.postgres_sslmode,
+            connect_timeout_sec=cfg.tickets.postgres_connect_timeout_sec,
+        )
+    )
+    _knowledge_base_service = KnowledgeBaseService(
+        repository=knowledge_repository,
+        ticket_contexts=ticket_contexts,
+        locations=locations,
+    )
+    return _knowledge_base_service
 
 
 def get_user_reply_session_service() -> UserReplySessionService:

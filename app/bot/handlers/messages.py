@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime
+from html import escape
 from typing import Any
 
 from maxapi.enums.parse_mode import ParseMode
@@ -32,6 +33,10 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_jamaica_issue_categories_keyboard,
     build_jamaica_main_menu_keyboard,
     build_jamaica_room_not_found_keyboard,
+    build_knowledge_base_menu_keyboard,
+    build_knowledge_cancel_keyboard,
+    build_knowledge_scope_keyboard,
+    build_knowledge_articles_keyboard,
     build_main_menu_keyboard,
     build_open_tickets_keyboard,
     build_registration_keyboard,
@@ -42,6 +47,9 @@ from app.helpdesk.models.ticket import TicketStatus
 from app.helpdesk.runtime import (
     get_clarification_session_service,
     get_close_reply_session_service,
+    get_knowledge_article_create_session_service,
+    get_knowledge_base_service,
+    get_knowledge_comment_session_service,
     get_room_ticket_context_service,
     get_ticket_clarification_service,
     get_ticket_link_service,
@@ -68,7 +76,8 @@ from app.helpdesk.services.ticket_service import (
 from app.helpdesk.services.menu_service import get_ticket_categories
 from app.helpdesk.services.ticket_card_update_service import TicketCardUpdateService
 from app.helpdesk.services.user_flow_service import UserDraftSourceMessage
-from app.helpdesk.texts import specialist_texts, user_texts
+from app.helpdesk.texts import knowledge_base_texts, specialist_texts, user_texts
+from app.helpdesk.texts.formatters import format_room_context_object
 from app.network.keyboards.network_keyboards import (
     build_network_main_menu_keyboard,
     build_network_menu_keyboard,
@@ -192,6 +201,7 @@ def _build_menu_for_user_with_registry(user_id: int, cfg, access_registry):
         is_admin=is_admin(user_id, admin_ids),
         can_use_wifi_help=not is_service_actor and "wifi_guest_issue" in hotel_features,
         can_use_tv_help=not is_service_actor and "tv_guest_issue" in hotel_features,
+        can_use_knowledge_base=can_view_service,
     )
 
 
@@ -283,6 +293,9 @@ def register(dp) -> None:
     ticket_links = get_ticket_link_service()
     clarification_sessions = get_clarification_session_service()
     close_reply_sessions = get_close_reply_session_service()
+    knowledge_comment_sessions = get_knowledge_comment_session_service()
+    knowledge_article_sessions = get_knowledge_article_create_session_service()
+    knowledge_base = get_knowledge_base_service()
     ticket_clarifications = get_ticket_clarification_service()
     user_reply_sessions = get_user_reply_session_service()
     room_ticket_contexts = get_room_ticket_context_service()
@@ -294,6 +307,7 @@ def register(dp) -> None:
         group_chat_id=cfg.bot.group_chat_id,
         max_messages=max_messages,
         clarifications=ticket_clarifications,
+        knowledge_base=knowledge_base,
         room_contexts=room_ticket_contexts,
         observability=get_observability_service(),
     )
@@ -350,6 +364,77 @@ def register(dp) -> None:
                 },
             )
         )
+
+    def _render_room_context_object_text(room_context: RoomTicketContext | None) -> str | None:
+        """Возвращает человекочитаемую строку объекта обслуживания."""
+
+        if room_context is None:
+            return None
+        return format_room_context_object(
+            room_number_snapshot=room_context.room_number_snapshot,
+            location_display_snapshot=room_context.location_display_snapshot,
+            category_snapshot=room_context.category_snapshot,
+        )
+
+    def _kb_root_screen():
+        scopes = tuple(knowledge_base.list_scopes())
+        return (
+            knowledge_base_texts.render_kb_scope_menu(scopes),
+            build_knowledge_base_menu_keyboard(scopes),
+        )
+
+    def _kb_category_screen(scope_id: int, category_id: int):
+        scope = knowledge_base.get_scope(scope_id)
+        category = knowledge_base.get_category_by_id(scope_id, category_id)
+        if scope is None or category is None:
+            return None
+        articles = knowledge_base.list_articles_for_category(
+            scope_id=scope_id,
+            category_id=category_id,
+        )
+        return (
+            knowledge_base_texts.render_kb_category(
+                scope_title=scope.title,
+                category=category,
+                articles=articles,
+            ),
+            build_knowledge_articles_keyboard(
+                scope_id,
+                category_id,
+                tuple((article.id, article.title) for article in articles[:10]),
+            ),
+        )
+
+    async def _update_kb_session_prompt(
+        *,
+        bot,
+        sender_id: int,
+        text: str,
+        keyboard,
+    ) -> None:
+        """Обновляет текущее KB-сообщение сессии или отправляет fallback."""
+
+        session = knowledge_article_sessions.get(sender_id)
+        prompt_message_id = session.prompt_message_id if session else None
+        if prompt_message_id:
+            updated = await max_messages.edit_message(
+                bot=bot,
+                message_id=prompt_message_id,
+                text=text,
+                attachments=[keyboard],
+                text_format=ParseMode.HTML,
+            )
+            if updated:
+                return
+        sent_mid = await max_messages.send_message(
+            bot=bot,
+            user_id=sender_id,
+            text=text,
+            attachments=[keyboard],
+            text_format=ParseMode.HTML,
+        )
+        if sent_mid:
+            knowledge_article_sessions.set_prompt_message_id(sender_id, sent_mid)
 
     async def _send_delayed_submit(user_id: int, bot) -> None:
         """Автоматически отправляет черновик после паузы в сообщениях."""
@@ -830,6 +915,41 @@ def register(dp) -> None:
                 specialist_message_id,
             )
 
+    async def _cleanup_knowledge_comment_messages(
+        *,
+        bot,
+        ticket_id: str,
+        specialist_user_id: int,
+        prompt_message_id: str | None,
+        specialist_message_id: str | None,
+    ) -> None:
+        """Удаляет временные сообщения сценария заметки специалиста."""
+
+        prompt_deleted = await max_messages.delete_message(
+            bot=bot,
+            message_id=prompt_message_id,
+        )
+        specialist_deleted = await max_messages.delete_message(
+            bot=bot,
+            message_id=specialist_message_id,
+        )
+        if not prompt_deleted:
+            logger.warning(
+                "Knowledge comment prompt delete failed: ticket_id=%s "
+                "specialist_user_id=%s prompt_message_id=%s",
+                ticket_id,
+                specialist_user_id,
+                prompt_message_id,
+            )
+        if not specialist_deleted:
+            logger.warning(
+                "Knowledge comment message delete failed: ticket_id=%s "
+                "specialist_user_id=%s specialist_message_id=%s",
+                ticket_id,
+                specialist_user_id,
+                specialist_message_id,
+            )
+
     async def _send_close_reply_to_user(
         event: MessageCreated,
         *,
@@ -1191,6 +1311,149 @@ def register(dp) -> None:
             result.ticket.user_id,
             session.prompt_message_id,
             specialist_message_id,
+        )
+        return True
+
+    async def _save_knowledge_comment(
+        event: MessageCreated,
+        *,
+        actor_id: int,
+        actor_name: str,
+        text: str,
+        attachments: list[Any],
+    ) -> bool:
+        """Сохраняет внутреннюю заметку специалиста по заявке."""
+
+        session = knowledge_comment_sessions.get(actor_id)
+        if session is None:
+            return False
+
+        bot = event._ensure_bot()
+        specialist_message_id = getattr(getattr(event.message, "body", None), "mid", None)
+        specialist_message_id = str(specialist_message_id) if specialist_message_id else None
+
+        if text == "/cancel":
+            knowledge_comment_sessions.cancel(actor_id)
+            await _cleanup_knowledge_comment_messages(
+                bot=bot,
+                ticket_id=session.ticket_id,
+                specialist_user_id=actor_id,
+                prompt_message_id=session.prompt_message_id,
+                specialist_message_id=specialist_message_id,
+            )
+            return True
+
+        if is_command_text(text):
+            return False
+
+        if attachments:
+            await event.message.answer("На этом шаге заметка принимается только текстом.")
+            return True
+
+        if not text:
+            if session.step == "waiting_title":
+                await event.message.answer("Введите тему заметки.")
+            else:
+                await event.message.answer("Введите текст заметки.")
+            return True
+
+        ticket = await tickets.get_ticket(session.ticket_id)
+        if ticket is None:
+            knowledge_comment_sessions.reset(actor_id)
+            await event.message.answer(specialist_texts.NOT_FOUND_TEXT)
+            return True
+
+        admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
+        if not can_change_ticket_status(
+            actor_user_id=actor_id,
+            ticket=ticket,
+            admin_ids=admin_ids,
+            specialist_ids=specialist_ids,
+        ):
+            knowledge_comment_sessions.reset(actor_id)
+            await event.message.answer(specialist_texts.FORBIDDEN_TEXT)
+            return True
+
+        if session.step == "waiting_title":
+            title = text.strip()
+            if len(title) > 120:
+                await event.message.answer("Тема должна быть не длиннее 120 символов.")
+                return True
+            knowledge_comment_sessions.set_title(actor_id, title)
+            prompt_text = knowledge_base_texts.render_comment_body_prompt(
+                ticket_id=session.ticket_id,
+                title=title,
+            )
+            prompt_keyboard = build_comment_cancel_keyboard(ticket.ticket_id)
+            prompt_updated = False
+            if session.prompt_message_id:
+                prompt_updated = await max_messages.edit_message(
+                    bot=bot,
+                    message_id=session.prompt_message_id,
+                    text=prompt_text,
+                    attachments=[prompt_keyboard],
+                    text_format=ParseMode.HTML,
+                )
+            if not prompt_updated:
+                prompt_message_id = await max_messages.send_message(
+                    bot=bot,
+                    chat_id=session.group_chat_id or group_chat_id,
+                    text=prompt_text,
+                    attachments=[prompt_keyboard],
+                    text_format=ParseMode.HTML,
+                )
+                if not prompt_message_id:
+                    await event.message.answer("Не удалось показать ввод заметки. Попробуйте ещё раз.")
+                    return True
+                knowledge_comment_sessions.set_prompt_message_id(actor_id, prompt_message_id)
+            return True
+
+        if len(text.strip()) > 4000:
+            await event.message.answer("Текст заметки должен быть не длиннее 4000 символов.")
+            return True
+
+        room_context = (
+            room_ticket_contexts.get_context(ticket.ticket_id)
+            if room_ticket_contexts is not None
+            else None
+        )
+        actor_role = "admin" if is_admin(actor_id, admin_ids) else "IT specialist"
+        _, article = knowledge_base.save_ticket_note(
+            ticket=ticket,
+            actor_user_id=actor_id,
+            actor_name=actor_name,
+            title=session.title,
+            text=text,
+            room_context=room_context,
+            source_message_id=specialist_message_id,
+            actor_role=actor_role,
+        )
+        await observability.ticket_event(
+            ticket_id=ticket.ticket_id,
+            event_type="ticket_comment_saved",
+            actor_user_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            source="group_message",
+            related_message_id=specialist_message_id,
+            metadata={"knowledge_article_created": bool(article)},
+        )
+        knowledge_comment_sessions.finish(actor_id)
+        await ticket_card_updates.update_group_ticket_card(
+            bot=bot,
+            ticket=ticket,
+            notify=False,
+        )
+        await _cleanup_knowledge_comment_messages(
+            bot=bot,
+            ticket_id=ticket.ticket_id,
+            specialist_user_id=actor_id,
+            prompt_message_id=session.prompt_message_id,
+            specialist_message_id=specialist_message_id,
+        )
+        await event.message.answer(
+            f"{knowledge_base_texts.COMMENT_SAVE_NOTIFICATION}\n{escape(session.title)}",
+            format=ParseMode.HTML,
         )
         return True
 
@@ -1609,6 +1872,16 @@ def register(dp) -> None:
             if clarification_sent:
                 return
 
+            knowledge_comment_saved = await _save_knowledge_comment(
+                event,
+                actor_id=actor_id,
+                actor_name=actor_name,
+                text=text,
+                attachments=relay_message_attachments,
+            )
+            if knowledge_comment_saved:
+                return
+
             if not text.startswith("/"):
                 if can_view_service_functions(
                     user_id=actor_id,
@@ -1775,13 +2048,21 @@ def register(dp) -> None:
                         ticket_id=existing_ticket.ticket_id,
                         group_chat_id=group_chat_id,
                     )
-                    prompt_sent = await event.message.answer(
-                        "Введите сообщение пользователю о выполненной работе.",
+                    prompt_message_id = await max_messages.send_message(
+                        bot=event._ensure_bot(),
+                        chat_id=group_chat_id,
+                        text="Введите сообщение пользователю о выполненной работе.",
                         attachments=[
                             build_close_reply_cancel_keyboard(existing_ticket.ticket_id)
                         ],
+                        text_format=None,
                     )
-                    prompt_message_id = _extract_message_id(prompt_sent)
+                    if not prompt_message_id:
+                        close_reply_sessions.cancel(actor_id)
+                        await event.message.answer(
+                            "Не удалось отправить запрос ответа. Попробуйте ещё раз."
+                        )
+                        return
                     close_reply_sessions.set_prompt_message_id(actor_id, prompt_message_id)
                     await observability.ticket_event(
                         ticket_id=existing_ticket.ticket_id,
@@ -1891,6 +2172,7 @@ def register(dp) -> None:
             user_flow.reset(sender_id)
             network_session.reset(sender_id)
             user_reply_sessions.reset(sender_id)
+            knowledge_article_sessions.reset(sender_id)
             await event.message.answer(
                 text=user_texts.WELCOME_TEXT,
                 attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
@@ -1901,6 +2183,113 @@ def register(dp) -> None:
                 text,
             )
             return
+
+        kb_session = knowledge_article_sessions.get(sender_id)
+        if kb_session is not None:
+            if text == "/cancel":
+                knowledge_article_sessions.reset(sender_id)
+                kb_root_text, kb_root_keyboard = _kb_root_screen()
+                await _update_kb_session_prompt(
+                    bot=event._ensure_bot(),
+                    sender_id=sender_id,
+                    text=kb_root_text,
+                    keyboard=kb_root_keyboard,
+                )
+                return
+            if message_attachments or audio_source_message:
+                await _update_kb_session_prompt(
+                    bot=event._ensure_bot(),
+                    sender_id=sender_id,
+                    text="На этом шаге принимается только текст.\n\n[Отмена]",
+                    keyboard=build_knowledge_cancel_keyboard(),
+                )
+                return
+            if kb_session.step == "waiting_title":
+                if not text:
+                    await _update_kb_session_prompt(
+                        bot=event._ensure_bot(),
+                        sender_id=sender_id,
+                        text="Введите тему заметки текстом.",
+                        keyboard=build_knowledge_cancel_keyboard(),
+                    )
+                    return
+                title = text.strip()
+                if len(title) > 120:
+                    await _update_kb_session_prompt(
+                        bot=event._ensure_bot(),
+                        sender_id=sender_id,
+                        text="Тема должна быть не длиннее 120 символов.",
+                        keyboard=build_knowledge_cancel_keyboard(),
+                    )
+                    return
+                knowledge_article_sessions.set_title(sender_id, title)
+                await _update_kb_session_prompt(
+                    bot=event._ensure_bot(),
+                    sender_id=sender_id,
+                    text=knowledge_base_texts.render_manual_article_body_prompt(
+                        kb_session.scope_title or "Раздел",
+                        kb_session.category_title or "Без категории",
+                        title,
+                    ),
+                    keyboard=build_knowledge_cancel_keyboard(),
+                )
+                return
+            if kb_session.step == "waiting_body":
+                if not text:
+                    await _update_kb_session_prompt(
+                        bot=event._ensure_bot(),
+                        sender_id=sender_id,
+                        text="Введите текст записи.",
+                        keyboard=build_knowledge_cancel_keyboard(),
+                    )
+                    return
+                body = text.strip()
+                if len(body) > 4000:
+                    await _update_kb_session_prompt(
+                        bot=event._ensure_bot(),
+                        sender_id=sender_id,
+                        text="Текст заметки должен быть не длиннее 4000 символов.",
+                        keyboard=build_knowledge_cancel_keyboard(),
+                    )
+                    return
+                article = knowledge_base.create_manual_article(
+                    scope_id=kb_session.scope_id,
+                    hotel_id=kb_session.hotel_id,
+                    category_id=kb_session.category_id,
+                    title=kb_session.title,
+                    body=body,
+                    author_user_id=sender_id,
+                )
+                knowledge_article_sessions.finish(sender_id)
+                await event.message.answer(
+                    text=knowledge_base_texts.render_manual_article_saved(
+                        kb_session.scope_title or "Раздел",
+                        kb_session.category_title or "Без категории",
+                        article.title,
+                    ),
+                    format=ParseMode.HTML,
+                )
+                if kb_session.scope_id and kb_session.category_id:
+                    category_screen = _kb_category_screen(kb_session.scope_id, kb_session.category_id)
+                    if category_screen is not None:
+                        category_text, category_keyboard = category_screen
+                        await max_messages.send_message(
+                            bot=event._ensure_bot(),
+                            user_id=sender_id,
+                            text=category_text,
+                            attachments=[category_keyboard],
+                            text_format=ParseMode.HTML,
+                        )
+                        return
+                kb_root_text, kb_root_keyboard = _kb_root_screen()
+                await max_messages.send_message(
+                    bot=event._ensure_bot(),
+                    user_id=sender_id,
+                    text=kb_root_text,
+                    attachments=[kb_root_keyboard],
+                    text_format=ParseMode.HTML,
+                )
+                return
 
         pending_reply_sent = await _send_pending_user_reply_to_group(
             event,

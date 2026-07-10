@@ -8,6 +8,7 @@ from maxapi.enums.parse_mode import ParseMode
 from app.bot.services.max_message_service import MaxMessageService
 from app.helpdesk.keyboards.helpdesk_keyboards import build_ticket_actions_keyboard
 from app.helpdesk.models.ticket import Ticket
+from app.helpdesk.services.knowledge_base_service import KnowledgeBaseService
 from app.helpdesk.services.postgres_ticket_link_service import PostgresTicketLinkService
 from app.helpdesk.services.ticket_clarification_service import TicketClarificationService
 from app.helpdesk.services.ticket_link_service import TicketLinkService
@@ -28,6 +29,7 @@ class TicketCardUpdateService:
         group_chat_id: int,
         max_messages: MaxMessageService | None = None,
         clarifications: TicketClarificationService | None = None,
+        knowledge_base: KnowledgeBaseService | None = None,
         room_contexts=None,
         observability: ObservabilityService | None = None,
     ) -> None:
@@ -35,6 +37,7 @@ class TicketCardUpdateService:
         self._group_chat_id = group_chat_id
         self._max_messages = max_messages or MaxMessageService()
         self._clarifications = clarifications
+        self._knowledge_base = knowledge_base
         self._room_contexts = room_contexts
         self._observability = observability
 
@@ -55,6 +58,7 @@ class TicketCardUpdateService:
             last_clarification=self._get_last_clarification(ticket_id),
             attached_user_reply=self._get_attached_user_reply(ticket_id),
             closing_reply=self._get_closing_reply(ticket_id),
+            last_specialist_comment=self._get_last_specialist_comment(ticket_id),
         )
         room_context = self._get_room_context(ticket_id)
         keyboard = build_ticket_actions_keyboard(ticket, room_context=room_context)
@@ -187,6 +191,7 @@ class TicketCardUpdateService:
             last_clarification=self._get_last_clarification(ticket_id),
             attached_user_reply=self._get_attached_user_reply(ticket_id),
             closing_reply=self._get_closing_reply(ticket_id),
+            last_specialist_comment=self._get_last_specialist_comment(ticket_id),
         )
         room_context = self._get_room_context(ticket_id)
         keyboard = build_ticket_actions_keyboard(ticket, room_context=room_context)
@@ -277,6 +282,13 @@ class TicketCardUpdateService:
         if self._clarifications is None:
             return None
         return self._clarifications.get_closing_reply(ticket_id)
+
+    def _get_last_specialist_comment(self, ticket_id: str):
+        """Возвращает последний внутренний комментарий специалиста."""
+
+        if self._knowledge_base is None:
+            return None
+        return self._knowledge_base.get_last_ticket_comment(ticket_id)
 
     def _build_card_attachments(self, ticket_id: str, keyboard) -> list[Any] | None:
         """Собирает вложения карточки: медиа ответа и кнопки."""

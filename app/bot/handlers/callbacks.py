@@ -27,10 +27,18 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_admin_user_actions_keyboard,
     build_admin_users_keyboard,
     build_clarification_cancel_keyboard,
+    build_comment_cancel_keyboard,
     build_close_reply_cancel_keyboard,
     build_categories_keyboard,
     build_jamaica_cancel_keyboard,
     build_jamaica_main_menu_keyboard,
+    build_knowledge_add_category_keyboard,
+    build_knowledge_add_scope_keyboard,
+    build_knowledge_article_view_keyboard,
+    build_knowledge_articles_keyboard,
+    build_knowledge_base_menu_keyboard,
+    build_knowledge_cancel_keyboard,
+    build_knowledge_scope_keyboard,
     build_main_menu_keyboard,
     build_open_tickets_keyboard,
     build_ticket_actions_keyboard,
@@ -45,6 +53,7 @@ from app.helpdesk.models.ticket import TicketStatus
 from app.helpdesk.payloads import (
     ClarificationCancelPayload,
     CloseReplyCancelPayload,
+    KnowledgeCommentCancelPayload,
     SpecialistTicketPayload,
     UserMenuPayload,
 )
@@ -52,6 +61,9 @@ from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.runtime import (
     get_clarification_session_service,
     get_close_reply_session_service,
+    get_knowledge_article_create_session_service,
+    get_knowledge_base_service,
+    get_knowledge_comment_session_service,
     get_room_history_service,
     get_room_ticket_context_service,
     get_ticket_clarification_service,
@@ -63,7 +75,8 @@ from app.helpdesk.runtime import (
 from app.helpdesk.services.menu_service import get_ticket_categories
 from app.helpdesk.services.room_history_service import ROOM_HISTORY_LIMIT
 from app.helpdesk.services.ticket_card_update_service import TicketCardUpdateService
-from app.helpdesk.texts import room_history_texts, specialist_texts, user_texts
+from app.helpdesk.texts import knowledge_base_texts, room_history_texts, specialist_texts, user_texts
+from app.helpdesk.texts.formatters import format_room_context_object
 from app.network.keyboards.network_keyboards import build_network_menu_keyboard
 from app.network.runtime import get_network_session_service
 from app.observability.runtime import get_observability_service
@@ -233,6 +246,7 @@ def _build_menu_for_user(user_id: int, cfg, access_registry):
         is_admin=is_admin(user_id, admin_ids),
         can_use_wifi_help=not is_service_actor and "wifi_guest_issue" in hotel_features,
         can_use_tv_help=not is_service_actor and "tv_guest_issue" in hotel_features,
+        can_use_knowledge_base=can_view_service,
     )
 
 
@@ -267,6 +281,9 @@ def register(dp) -> None:
     ticket_links = get_ticket_link_service()
     clarification_sessions = get_clarification_session_service()
     close_reply_sessions = get_close_reply_session_service()
+    knowledge_comment_sessions = get_knowledge_comment_session_service()
+    knowledge_article_sessions = get_knowledge_article_create_session_service()
+    knowledge_base = get_knowledge_base_service()
     ticket_clarifications = get_ticket_clarification_service()
     user_reply_sessions = get_user_reply_session_service()
     room_ticket_contexts = get_room_ticket_context_service()
@@ -278,6 +295,7 @@ def register(dp) -> None:
         group_chat_id=cfg.bot.group_chat_id,
         max_messages=max_messages,
         clarifications=ticket_clarifications,
+        knowledge_base=knowledge_base,
         room_contexts=room_ticket_contexts,
         observability=observability,
     )
@@ -411,6 +429,65 @@ def register(dp) -> None:
             except Exception:
                 pass
 
+    def _render_room_context_object_text(room_context: RoomTicketContext | None) -> str | None:
+        """Возвращает человекочитаемый объект room-ticket заявки."""
+
+        if room_context is None:
+            return None
+        return format_room_context_object(
+            room_number_snapshot=room_context.room_number_snapshot,
+            location_display_snapshot=room_context.location_display_snapshot,
+            category_snapshot=room_context.category_snapshot,
+        )
+
+    async def _open_knowledge_base_menu(event: MessageCallback, user_id: int) -> None:
+        """Открывает корневой экран базы знаний."""
+
+        if not knowledge_base.is_available():
+            await event.answer(notification=knowledge_base_texts.KB_UNAVAILABLE_TEXT)
+            return
+        scopes = tuple(knowledge_base.list_scopes())
+        updated = await max_messages.answer_callback_with_message(
+            event=event,
+            text=knowledge_base_texts.render_kb_scope_menu(scopes),
+            attachments=[build_knowledge_base_menu_keyboard(scopes)],
+            notification="База знаний",
+            text_format=ParseMode.HTML,
+        )
+        if updated:
+            return
+        await event.message.answer(
+            text=knowledge_base_texts.render_kb_scope_menu(scopes),
+            attachments=[build_knowledge_base_menu_keyboard(scopes)],
+            format=ParseMode.HTML,
+        )
+        await _safe_answer(event, "База знаний")
+
+    async def _update_kb_message(
+        event: MessageCallback,
+        *,
+        text: str,
+        keyboard,
+        notification: str,
+    ) -> None:
+        """Пытается обновить текущее KB-сообщение, иначе шлет fallback."""
+
+        updated = await max_messages.answer_callback_with_message(
+            event=event,
+            text=text,
+            attachments=[keyboard],
+            notification=notification,
+            text_format=ParseMode.HTML,
+        )
+        if updated:
+            return
+        await event.message.answer(
+            text=text,
+            attachments=[keyboard],
+            format=ParseMode.HTML,
+        )
+        await _safe_answer(event, notification)
+
     @dp.message_callback(UserMenuPayload.filter())
     async def handle_user_menu_callback(event: MessageCallback, payload: UserMenuPayload):
         if event.message.recipient.chat_type != "dialog":
@@ -460,6 +537,18 @@ def register(dp) -> None:
                 attachments=[build_network_menu_keyboard()],
             )
             await event.answer(notification="Сетевое меню")
+            return
+
+        if action == "kb":
+            if not can_view_service_functions(
+                user_id=user_id,
+                admin_ids=admin_ids,
+                specialist_ids=specialist_ids,
+            ):
+                await event.answer(notification="Раздел доступен только IT/admin")
+                return
+            knowledge_article_sessions.reset(user_id)
+            await _open_knowledge_base_menu(event, user_id)
             return
 
         if action in {"jamaica_room", "jamaica_room_retry"}:
@@ -525,6 +614,11 @@ def register(dp) -> None:
                 attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
             )
             await event.answer(notification="Сервисные команды")
+            return
+
+        if action == "kb_cancel":
+            knowledge_article_sessions.reset(user_id)
+            await _open_knowledge_base_menu(event, user_id)
             return
 
         if action == "admin_help":
@@ -953,6 +1047,256 @@ def register(dp) -> None:
             await event.answer(notification="Показал обращения")
             return
 
+        if action == "kb_scope":
+            if not can_view_service_functions(
+                user_id=user_id,
+                admin_ids=admin_ids,
+                specialist_ids=specialist_ids,
+            ):
+                await event.answer(notification="Раздел доступен только IT/admin")
+                return
+            try:
+                scope_id = int((payload.value or "").strip())
+            except ValueError:
+                await event.answer(notification="Раздел не найден")
+                return
+            scope = knowledge_base.get_scope(scope_id)
+            if scope is None:
+                await event.answer(notification="Раздел не найден")
+                return
+            categories_for_scope = knowledge_base.list_categories_for_scope(scope.id)
+            await _update_kb_message(
+                event,
+                text=knowledge_base_texts.render_kb_scope(
+                    scope=scope,
+                    categories=categories_for_scope,
+                ),
+                keyboard=build_knowledge_scope_keyboard(scope.id, categories_for_scope),
+                notification=scope.title,
+            )
+            return
+
+        if action == "kb_cat":
+            if not can_view_service_functions(
+                user_id=user_id,
+                admin_ids=admin_ids,
+                specialist_ids=specialist_ids,
+            ):
+                await event.answer(notification="Раздел доступен только IT/admin")
+                return
+            raw_value = (payload.value or "").strip()
+            if ":" not in raw_value:
+                await event.answer(notification="Категория не найдена")
+                return
+            raw_scope_id, raw_category_id = raw_value.split(":", maxsplit=1)
+            try:
+                scope_id = int(raw_scope_id)
+                category_id = int(raw_category_id)
+            except ValueError:
+                await event.answer(notification="Категория не найдена")
+                return
+            scope = knowledge_base.get_scope(scope_id)
+            category = knowledge_base.get_category_by_id(scope_id, category_id)
+            if scope is None:
+                await event.answer(notification="Раздел не найден")
+                return
+            if category is None:
+                await event.answer(notification="Категория не найдена")
+                return
+            article_session = knowledge_article_sessions.get(user_id)
+            if (
+                article_session is not None
+                and article_session.step == "waiting_category"
+                and article_session.scope_id == scope_id
+            ):
+                knowledge_article_sessions.set_category(
+                    user_id,
+                    category_id=category.id,
+                    category_code=category.code,
+                    category_title=category.title,
+                )
+                knowledge_article_sessions.set_prompt_message_id(
+                    user_id,
+                    getattr(getattr(event.message, "body", None), "mid", None),
+                )
+                await _update_kb_message(
+                    event,
+                    text=knowledge_base_texts.render_manual_article_title_prompt(
+                        scope.title,
+                        category.title,
+                    ),
+                    keyboard=build_knowledge_cancel_keyboard(),
+                    notification="Введите тему",
+                )
+                return
+            articles = knowledge_base.list_articles_for_category(
+                scope_id=scope.id,
+                category_id=category.id,
+            )
+            await _update_kb_message(
+                event,
+                text=knowledge_base_texts.render_kb_category(
+                    scope_title=scope.title,
+                    category=category,
+                    articles=articles,
+                ),
+                keyboard=build_knowledge_articles_keyboard(
+                    scope.id,
+                    category.id,
+                    tuple((article.id, article.title) for article in articles[:10]),
+                ),
+                notification=f"Категория: {category.title}",
+            )
+            return
+
+        if action == "kb_article":
+            if not can_view_service_functions(
+                user_id=user_id,
+                admin_ids=admin_ids,
+                specialist_ids=specialist_ids,
+            ):
+                await event.answer(notification="Раздел доступен только IT/admin")
+                return
+            parts = (payload.value or "").strip().split(":")
+            if len(parts) != 3:
+                await event.answer(notification="Некорректная статья")
+                return
+            try:
+                scope_id = int(parts[0])
+                category_id = int(parts[1])
+                article_id = int(parts[2])
+            except ValueError:
+                await event.answer(notification="Некорректная статья")
+                return
+            scope = knowledge_base.get_scope(scope_id)
+            category = knowledge_base.get_category_by_id(scope_id, category_id)
+            article = knowledge_base.get_article(article_id)
+            if scope is None or category is None or article is None:
+                await event.answer(notification="Статья не найдена")
+                return
+            await _update_kb_message(
+                event,
+                text=knowledge_base_texts.render_kb_article(
+                    article,
+                    scope_title=scope.title,
+                    category_title=category.title,
+                ),
+                keyboard=build_knowledge_article_view_keyboard(scope_id, category_id),
+                notification="Открыта статья",
+            )
+            return
+
+        if action in {"kb_add", "kb_add_scope", "kb_add_cat"}:
+            if not can_view_service_functions(
+                user_id=user_id,
+                admin_ids=admin_ids,
+                specialist_ids=specialist_ids,
+            ):
+                await event.answer(notification="Раздел доступен только IT/admin")
+                return
+            scopes = tuple(knowledge_base.list_scopes())
+            if action == "kb_add":
+                knowledge_article_sessions.start(
+                    actor_user_id=user_id,
+                    chat_id=int(event.message.recipient.chat_id),
+                )
+                knowledge_article_sessions.set_prompt_message_id(
+                    user_id,
+                    getattr(getattr(event.message, "body", None), "mid", None),
+                )
+                await _update_kb_message(
+                    event,
+                    text=knowledge_base_texts.render_kb_add_scope_menu(scopes),
+                    keyboard=build_knowledge_add_scope_keyboard(scopes),
+                    notification="Выберите раздел",
+                )
+                return
+            raw_value = (payload.value or "").strip()
+            try:
+                scope_id = int(raw_value.split(":", maxsplit=1)[0])
+            except ValueError:
+                await event.answer(notification="Раздел не найден")
+                return
+            scope = knowledge_base.get_scope(scope_id)
+            if scope is None:
+                await event.answer(notification="Раздел не найден")
+                return
+            if action == "kb_add_scope":
+                knowledge_article_sessions.start(
+                    actor_user_id=user_id,
+                    chat_id=int(event.message.recipient.chat_id),
+                    hotel_id=scope.hotel_id if scope.scope_type.value == "hotel" else None,
+                    scope_id=scope.id,
+                    scope_code=scope.code,
+                    scope_title=scope.title,
+                )
+                knowledge_article_sessions.set_prompt_message_id(
+                    user_id,
+                    getattr(getattr(event.message, "body", None), "mid", None),
+                )
+                categories_for_scope = knowledge_base.list_categories_for_scope(scope.id)
+                if categories_for_scope:
+                    await _update_kb_message(
+                        event,
+                        text=knowledge_base_texts.render_manual_article_category_prompt(scope.title),
+                        keyboard=build_knowledge_add_category_keyboard(scope.id, categories_for_scope),
+                        notification="Выберите категорию",
+                    )
+                    return
+                knowledge_article_sessions.reset(user_id)
+                await _update_kb_message(
+                    event,
+                    text=(
+                        f"<b>Добавление заметки · {scope.title}</b>\n\n"
+                        "Для этого раздела категории пока не настроены."
+                    ),
+                    keyboard=build_knowledge_scope_keyboard(scope.id, categories_for_scope),
+                    notification="Нет категорий",
+                )
+                return
+            if ":" not in raw_value:
+                await event.answer(notification="Категория не найдена")
+                return
+            _, raw_category_id = raw_value.split(":", maxsplit=1)
+            try:
+                category_id = int(raw_category_id)
+            except ValueError:
+                await event.answer(notification="Категория не найдена")
+                return
+            category = knowledge_base.get_category_by_id(scope.id, category_id)
+            if category is None:
+                await event.answer(notification="Категория не найдена")
+                return
+            if knowledge_article_sessions.get(user_id) is None:
+                knowledge_article_sessions.start(
+                    actor_user_id=user_id,
+                    chat_id=int(event.message.recipient.chat_id),
+                    hotel_id=scope.hotel_id if scope.scope_type.value == "hotel" else None,
+                    scope_id=scope.id,
+                    scope_code=scope.code,
+                    scope_title=scope.title,
+                )
+            knowledge_article_sessions.set_category(
+                user_id,
+                category_id=category.id,
+                category_code=category.code,
+                category_title=category.title,
+            )
+            knowledge_article_sessions.set_prompt_message_id(
+                user_id,
+                getattr(getattr(event.message, "body", None), "mid", None),
+            )
+            await _update_kb_message(
+                event,
+                text=knowledge_base_texts.render_manual_article_title_prompt(
+                    scope.title,
+                    category.title,
+                ),
+                keyboard=build_knowledge_cancel_keyboard(),
+                notification="Введите тему",
+            )
+            return
+
         if action == "ticket_reply":
             ticket_id = (payload.value or "").strip()
             ticket = await tickets.get_ticket(ticket_id)
@@ -1358,6 +1702,38 @@ def register(dp) -> None:
                 session.prompt_message_id,
             )
 
+    @dp.message_callback(KnowledgeCommentCancelPayload.filter())
+    async def handle_knowledge_comment_cancel(
+        event: MessageCallback,
+        payload: KnowledgeCommentCancelPayload,
+    ):
+        """Отменяет ожидающий ввод заметки специалиста."""
+
+        actor_id = int(event.callback.user.user_id)
+        session = knowledge_comment_sessions.get_by_ticket(payload.ticket_id)
+        if session is None:
+            await max_messages.answer_callback(
+                event=event,
+                notification="Заметка уже отменена",
+            )
+            return
+        if session.actor_user_id != actor_id:
+            await max_messages.answer_callback(
+                event=event,
+                notification="Эту заметку начал другой специалист",
+            )
+            return
+
+        knowledge_comment_sessions.cancel(actor_id)
+        await max_messages.answer_callback(
+            event=event,
+            notification="Ввод заметки отменён",
+        )
+        await max_messages.delete_message(
+            bot=event._ensure_bot(),
+            message_id=session.prompt_message_id,
+        )
+
     @dp.message_callback(SpecialistTicketPayload.filter())
     async def handle_specialist_ticket_callback(
         event: MessageCallback, payload: SpecialistTicketPayload
@@ -1567,7 +1943,7 @@ def register(dp) -> None:
             )
             return
 
-        if action in {"release", "close", "clarify", "close_with_reply"}:
+        if action in {"release", "close", "clarify", "close_with_reply", "comment"}:
             ticket = await tickets.get_ticket(ticket_id)
             if ticket is None:
                 await max_messages.answer_callback(
@@ -1593,6 +1969,66 @@ def register(dp) -> None:
                 await max_messages.answer_callback(
                     event=event,
                     notification=specialist_texts.FORBIDDEN_TEXT,
+                )
+                return
+
+            if action == "comment":
+                existing_session = knowledge_comment_sessions.get_by_ticket(ticket.ticket_id)
+                if existing_session and existing_session.actor_user_id != actor_id:
+                    await max_messages.answer_callback(
+                        event=event,
+                        notification="Заметку уже начал другой специалист",
+                    )
+                    return
+                previous_session = knowledge_comment_sessions.get(actor_id)
+                if previous_session and previous_session.prompt_message_id:
+                    await max_messages.delete_message(
+                        bot=event._ensure_bot(),
+                        message_id=previous_session.prompt_message_id,
+                    )
+                room_context = (
+                    room_ticket_contexts.get_context(ticket.ticket_id)
+                    if room_ticket_contexts is not None
+                    else None
+                )
+                category_title = (
+                    room_context.category_snapshot
+                    if room_context and room_context.category_snapshot
+                    else ticket.category
+                )
+                session = knowledge_comment_sessions.start(
+                    actor_user_id=actor_id,
+                    actor_name=actor_name,
+                    ticket_id=ticket.ticket_id,
+                    group_chat_id=cfg.bot.group_chat_id,
+                    scope_id=knowledge_base.resolve_scope_id_for_room_context(room_context),
+                    hotel_id=room_context.hotel_id if room_context else None,
+                    category_id=room_context.issue_category_id if room_context else None,
+                    location_id=room_context.location_id if room_context else None,
+                    location_display=_render_room_context_object_text(room_context),
+                )
+                await max_messages.answer_callback(
+                    event=event,
+                    notification="Введите тему заметки",
+                )
+                prompt_sent = await event.message.answer(
+                    knowledge_base_texts.render_comment_prompt(
+                        ticket_id=ticket.ticket_id,
+                        category_title=category_title,
+                        object_text=_render_room_context_object_text(room_context),
+                    ),
+                    attachments=[build_comment_cancel_keyboard(ticket.ticket_id)],
+                    format=ParseMode.HTML,
+                )
+                prompt_message_id = _extract_message_id(prompt_sent)
+                knowledge_comment_sessions.set_prompt_message_id(actor_id, prompt_message_id)
+                logger.info(
+                    "Knowledge comment session started: ticket_id=%s actor_id=%s "
+                    "prompt_message_id=%s session_id=%s",
+                    ticket.ticket_id,
+                    actor_id,
+                    prompt_message_id,
+                    session.session_id,
                 )
                 return
 
@@ -1674,11 +2110,20 @@ def register(dp) -> None:
                     event=event,
                     notification="Введите сообщение пользователю следующим сообщением",
                 )
-                prompt_sent = await event.message.answer(
-                    "Введите сообщение пользователю о выполненной работе.",
+                prompt_message_id = await max_messages.send_message(
+                    bot=event._ensure_bot(),
+                    chat_id=cfg.bot.group_chat_id,
+                    text="Введите сообщение пользователю о выполненной работе.",
                     attachments=[build_close_reply_cancel_keyboard(ticket.ticket_id)],
+                    text_format=None,
                 )
-                prompt_message_id = _extract_message_id(prompt_sent)
+                if not prompt_message_id:
+                    close_reply_sessions.cancel(actor_id)
+                    await max_messages.answer_callback(
+                        event=event,
+                        notification="Не удалось отправить запрос ответа. Попробуйте ещё раз",
+                    )
+                    return
                 close_reply_sessions.set_prompt_message_id(actor_id, prompt_message_id)
                 await observability.ticket_event(
                     ticket_id=ticket.ticket_id,

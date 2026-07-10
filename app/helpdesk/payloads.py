@@ -27,3 +27,9 @@ class CloseReplyCancelPayload(CallbackPayload, prefix="crc"):
     """Payload отмены закрытия заявки с ответом."""
 
     ticket_id: str
+
+
+class KnowledgeCommentCancelPayload(CallbackPayload, prefix="kcc"):
+    """Payload отмены ввода комментария специалиста."""
+
+    ticket_id: str
