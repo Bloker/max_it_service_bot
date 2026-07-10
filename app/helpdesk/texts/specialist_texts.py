@@ -4,7 +4,7 @@ from html import escape
 
 from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.models.ticket import Ticket
-from app.helpdesk.services.knowledge_base_service import TicketSpecialistComment
+from app.helpdesk.services.ticket_internal_comment_service import TicketInternalComment
 from app.helpdesk.services.ticket_clarification_service import (
     TicketClarification,
     TicketClosingReply,
@@ -35,6 +35,25 @@ def _format_room_context_line(room_context: RoomTicketContext) -> str:
     return f"Объект: {object_text}"
 
 
+def render_internal_comment_prompt(
+    *,
+    ticket_id: str,
+    category_title: str | None,
+    object_text: str | None,
+) -> str:
+    """Форматирует приглашение для внутреннего комментария специалиста."""
+
+    lines = [f"Введите внутренний комментарий по заявке {escape(ticket_id)}.", ""]
+    if object_text:
+        lines.append(f"Объект: {escape(object_text)}")
+    if category_title:
+        lines.append(f"Категория: {escape(category_title)}")
+    if object_text or category_title:
+        lines.append("")
+    lines.append("Комментарий не будет отправлен пользователю и не попадёт в базу знаний.")
+    return "\n".join(lines)
+
+
 def render_group_ticket(
     ticket: Ticket,
     *,
@@ -42,7 +61,7 @@ def render_group_ticket(
     last_clarification: TicketClarification | None = None,
     attached_user_reply: TicketUserReply | None = None,
     closing_reply: TicketClosingReply | None = None,
-    last_specialist_comment: TicketSpecialistComment | None = None,
+    last_internal_comment: TicketInternalComment | None = None,
 ) -> str:
     """Форматирует карточку заявки для группового чата IT."""
 
@@ -88,12 +107,10 @@ def render_group_ticket(
             "Ответ при закрытии:\n"
             f"{escape(closing_reply.card_text)}"
         )
-    if last_specialist_comment is not None:
-        note_title = escape(last_specialist_comment.title)
-        comment_text = escape(last_specialist_comment.card_text)
+    if last_internal_comment is not None:
+        comment_text = escape(last_internal_comment.card_text)
         blocks.append(
-            "Последняя заметка:\n"
-            f"{note_title}\n\n"
+            "Внутренний комментарий:\n"
             f"{comment_text}"
         )
     return "\n\n".join(blocks)

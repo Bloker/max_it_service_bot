@@ -2,7 +2,7 @@ import unittest
 
 from app.helpdesk.payloads import (
     ClarificationCancelPayload,
-    KnowledgeCommentCancelPayload,
+    InternalCommentCancelPayload,
     SpecialistTicketPayload,
     UserMenuPayload,
 )
@@ -49,13 +49,13 @@ class CallbackPayloadTests(unittest.TestCase):
         self.assertEqual(unpacked.action, "tool")
         self.assertEqual(unpacked.value, "ping")
 
-    def test_knowledge_comment_cancel_payload_round_trip(self) -> None:
-        payload = KnowledgeCommentCancelPayload(ticket_id="T-00077")
+    def test_internal_comment_cancel_payload_round_trip(self) -> None:
+        payload = InternalCommentCancelPayload(ticket_id="T-00077")
 
         packed = payload.pack()
-        unpacked = KnowledgeCommentCancelPayload.unpack(packed)
+        unpacked = InternalCommentCancelPayload.unpack(packed)
 
-        self.assertEqual(packed, "kcc|T-00077")
+        self.assertEqual(packed, "tic|T-00077")
         self.assertEqual(unpacked.ticket_id, "T-00077")
 
 

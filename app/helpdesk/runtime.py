@@ -11,7 +11,10 @@ from app.helpdesk.services.knowledge_article_create_session_service import (
     KnowledgeArticleCreateSessionService,
 )
 from app.helpdesk.services.knowledge_base_service import KnowledgeBaseService
-from app.helpdesk.services.knowledge_comment_session_service import KnowledgeCommentSessionService
+from app.helpdesk.services.ticket_internal_comment_session_service import (
+    TicketInternalCommentSessionService,
+)
+from app.helpdesk.services.ticket_internal_comment_service import TicketInternalCommentService
 from app.helpdesk.services.ticket_clarification_service import TicketClarificationService
 from app.helpdesk.services.room_history_service import RoomHistoryService
 from app.helpdesk.services.ticket_link_service import TicketLinkService
@@ -27,7 +30,8 @@ _user_flow_service: UserFlowService | None = None
 _ticket_link_service: TicketLinkService | PostgresTicketLinkService | None = None
 _clarification_session_service: ClarificationSessionService | None = None
 _close_reply_session_service: CloseReplySessionService | None = None
-_knowledge_comment_session_service: KnowledgeCommentSessionService | None = None
+_ticket_internal_comment_session_service: TicketInternalCommentSessionService | None = None
+_ticket_internal_comment_service: TicketInternalCommentService | None = None
 _knowledge_article_create_session_service: KnowledgeArticleCreateSessionService | None = None
 _knowledge_base_service: KnowledgeBaseService | None = None
 _ticket_clarification_service: TicketClarificationService | None = None
@@ -149,13 +153,38 @@ def get_close_reply_session_service() -> CloseReplySessionService:
     return _close_reply_session_service
 
 
-def get_knowledge_comment_session_service() -> KnowledgeCommentSessionService:
-    """Возвращает singleton сессий ввода комментария специалиста."""
+def get_ticket_internal_comment_session_service() -> TicketInternalCommentSessionService:
+    """Возвращает singleton сессий ввода внутренних комментариев."""
 
-    global _knowledge_comment_session_service
-    if _knowledge_comment_session_service is None:
-        _knowledge_comment_session_service = KnowledgeCommentSessionService()
-    return _knowledge_comment_session_service
+    global _ticket_internal_comment_session_service
+    if _ticket_internal_comment_session_service is None:
+        _ticket_internal_comment_session_service = TicketInternalCommentSessionService()
+    return _ticket_internal_comment_session_service
+
+
+def get_ticket_internal_comment_service() -> TicketInternalCommentService:
+    """Возвращает сервис внутренних комментариев по заявкам."""
+
+    global _ticket_internal_comment_service
+    if _ticket_internal_comment_service is None:
+        cfg = get_config()
+        repository = None
+        if cfg.tickets.backend == "postgres":
+            from app.helpdesk.repositories.postgres_ticket_context_repository import (
+                PostgresTicketContextRepository,
+            )
+
+            repository = PostgresTicketContextRepository(
+                host=cfg.tickets.postgres_host,
+                port=cfg.tickets.postgres_port,
+                database=cfg.tickets.postgres_db,
+                user=cfg.tickets.postgres_user,
+                password=cfg.tickets.postgres_password,
+                sslmode=cfg.tickets.postgres_sslmode,
+                connect_timeout_sec=cfg.tickets.postgres_connect_timeout_sec,
+            )
+        _ticket_internal_comment_service = TicketInternalCommentService(repository)
+    return _ticket_internal_comment_service
 
 
 def get_knowledge_article_create_session_service() -> KnowledgeArticleCreateSessionService:

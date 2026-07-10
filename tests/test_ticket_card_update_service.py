@@ -2,7 +2,10 @@ import unittest
 
 from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.models.ticket import Ticket, TicketStatus
-from app.helpdesk.services.knowledge_base_service import KnowledgeBaseService, TicketSpecialistComment
+from app.helpdesk.services.ticket_internal_comment_service import (
+    TicketInternalComment,
+    TicketInternalCommentService,
+)
 from app.helpdesk.services.ticket_card_update_service import TicketCardUpdateService
 from app.helpdesk.services.ticket_clarification_service import TicketClarificationService
 from app.helpdesk.services.ticket_link_service import TicketLinkService
@@ -62,12 +65,12 @@ class FakeRoomContexts:
         return self.context
 
 
-class FakeKnowledgeBase(KnowledgeBaseService):
-    def __init__(self, comment: TicketSpecialistComment | None = None) -> None:
+class FakeInternalComments(TicketInternalCommentService):
+    def __init__(self, comment: TicketInternalComment | None = None) -> None:
         super().__init__()
         self.comment = comment
 
-    def get_last_ticket_comment(self, ticket_id: str):
+    def get_last(self, ticket_id: str):
         return self.comment
 
 
@@ -172,7 +175,7 @@ class TicketCardUpdateServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["attachments"][0].payload.buttons[0][0].text, "Освободить")
         self.assertEqual(
             [button.text for button in call["attachments"][0].payload.buttons[-2]],
-            ["Заметка", "История номера"],
+            ["История номера"],
         )
         self.assertEqual(links.get_group_message_id("T-00004"), "callback-mid")
 
@@ -225,31 +228,28 @@ class TicketCardUpdateServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attachments[3].payload.buttons[0][0].text, "Взять в работу")
         self.assertIn("Ответ пользователя:", max_messages.edit_calls[0]["text"])
 
-    async def test_updates_card_with_last_specialist_comment_block(self) -> None:
+    async def test_updates_card_with_last_internal_comment_block(self) -> None:
         links = TicketLinkService()
         links.bind_group_message("T-00006", "root-mid", primary=True)
         max_messages = FakeMaxMessages(edit_result=True)
-        comment = TicketSpecialistComment(
+        comment = TicketInternalComment(
             ticket_id="T-00006",
-            actor_user_id=10,
-            actor_name="Дмитрий",
-            title="Порт коммутатора",
-            text="Проверен порт коммутатора",
+            body="Проверен порт коммутатора",
             created_at=None,
         )
         service = TicketCardUpdateService(
             ticket_links=links,
             group_chat_id=-100,
             max_messages=max_messages,
-            knowledge_base=FakeKnowledgeBase(comment),
+            internal_comments=FakeInternalComments(comment),
         )
         ticket = Ticket(id="T-00006", user_id=101, category="Интернет", text="Нет сети")
 
         updated = await service.update_group_ticket_card(bot=object(), ticket=ticket)
 
         self.assertTrue(updated)
-        self.assertIn("Последняя заметка:", max_messages.edit_calls[0]["text"])
-        self.assertIn("Порт коммутатора", max_messages.edit_calls[0]["text"])
+        self.assertIn("Внутренний комментарий:", max_messages.edit_calls[0]["text"])
+        self.assertIn("Проверен порт коммутатора", max_messages.edit_calls[0]["text"])
 
 
 if __name__ == "__main__":

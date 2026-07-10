@@ -27,7 +27,7 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_admin_user_actions_keyboard,
     build_admin_users_keyboard,
     build_clarification_cancel_keyboard,
-    build_comment_cancel_keyboard,
+    build_internal_comment_cancel_keyboard,
     build_close_reply_cancel_keyboard,
     build_categories_keyboard,
     build_jamaica_cancel_keyboard,
@@ -53,7 +53,7 @@ from app.helpdesk.models.ticket import TicketStatus
 from app.helpdesk.payloads import (
     ClarificationCancelPayload,
     CloseReplyCancelPayload,
-    KnowledgeCommentCancelPayload,
+    InternalCommentCancelPayload,
     SpecialistTicketPayload,
     UserMenuPayload,
 )
@@ -63,7 +63,8 @@ from app.helpdesk.runtime import (
     get_close_reply_session_service,
     get_knowledge_article_create_session_service,
     get_knowledge_base_service,
-    get_knowledge_comment_session_service,
+    get_ticket_internal_comment_session_service,
+    get_ticket_internal_comment_service,
     get_room_history_service,
     get_room_ticket_context_service,
     get_ticket_clarification_service,
@@ -281,7 +282,8 @@ def register(dp) -> None:
     ticket_links = get_ticket_link_service()
     clarification_sessions = get_clarification_session_service()
     close_reply_sessions = get_close_reply_session_service()
-    knowledge_comment_sessions = get_knowledge_comment_session_service()
+    internal_comment_sessions = get_ticket_internal_comment_session_service()
+    internal_comments = get_ticket_internal_comment_service()
     knowledge_article_sessions = get_knowledge_article_create_session_service()
     knowledge_base = get_knowledge_base_service()
     ticket_clarifications = get_ticket_clarification_service()
@@ -295,7 +297,7 @@ def register(dp) -> None:
         group_chat_id=cfg.bot.group_chat_id,
         max_messages=max_messages,
         clarifications=ticket_clarifications,
-        knowledge_base=knowledge_base,
+        internal_comments=internal_comments,
         room_contexts=room_ticket_contexts,
         observability=observability,
     )
@@ -1702,32 +1704,32 @@ def register(dp) -> None:
                 session.prompt_message_id,
             )
 
-    @dp.message_callback(KnowledgeCommentCancelPayload.filter())
-    async def handle_knowledge_comment_cancel(
+    @dp.message_callback(InternalCommentCancelPayload.filter())
+    async def handle_internal_comment_cancel(
         event: MessageCallback,
-        payload: KnowledgeCommentCancelPayload,
+        payload: InternalCommentCancelPayload,
     ):
-        """Отменяет ожидающий ввод заметки специалиста."""
+        """Отменяет ожидающий ввод внутреннего комментария."""
 
         actor_id = int(event.callback.user.user_id)
-        session = knowledge_comment_sessions.get_by_ticket(payload.ticket_id)
+        session = internal_comment_sessions.get_by_ticket(payload.ticket_id)
         if session is None:
             await max_messages.answer_callback(
                 event=event,
-                notification="Заметка уже отменена",
+                notification="Комментарий уже отменён",
             )
             return
         if session.actor_user_id != actor_id:
             await max_messages.answer_callback(
                 event=event,
-                notification="Эту заметку начал другой специалист",
+                notification="Этот комментарий начал другой специалист",
             )
             return
 
-        knowledge_comment_sessions.cancel(actor_id)
+        internal_comment_sessions.cancel(actor_id)
         await max_messages.answer_callback(
             event=event,
-            notification="Ввод заметки отменён",
+            notification="Ввод комментария отменён",
         )
         await max_messages.delete_message(
             bot=event._ensure_bot(),
@@ -1972,15 +1974,22 @@ def register(dp) -> None:
                 )
                 return
 
+            if action == "comment" and ticket.status == TicketStatus.CLOSED:
+                await max_messages.answer_callback(
+                    event=event,
+                    notification=specialist_texts.ALREADY_CLOSED_TEXT,
+                )
+                return
+
             if action == "comment":
-                existing_session = knowledge_comment_sessions.get_by_ticket(ticket.ticket_id)
+                existing_session = internal_comment_sessions.get_by_ticket(ticket.ticket_id)
                 if existing_session and existing_session.actor_user_id != actor_id:
                     await max_messages.answer_callback(
                         event=event,
-                        notification="Заметку уже начал другой специалист",
+                        notification="Комментарий уже начал другой специалист",
                     )
                     return
-                previous_session = knowledge_comment_sessions.get(actor_id)
+                previous_session = internal_comment_sessions.get(actor_id)
                 if previous_session and previous_session.prompt_message_id:
                     await max_messages.delete_message(
                         bot=event._ensure_bot(),
@@ -1996,34 +2005,34 @@ def register(dp) -> None:
                     if room_context and room_context.category_snapshot
                     else ticket.category
                 )
-                session = knowledge_comment_sessions.start(
+                session = internal_comment_sessions.start(
                     actor_user_id=actor_id,
                     actor_name=actor_name,
                     ticket_id=ticket.ticket_id,
                     group_chat_id=cfg.bot.group_chat_id,
-                    scope_id=knowledge_base.resolve_scope_id_for_room_context(room_context),
                     hotel_id=room_context.hotel_id if room_context else None,
                     category_id=room_context.issue_category_id if room_context else None,
                     location_id=room_context.location_id if room_context else None,
                     location_display=_render_room_context_object_text(room_context),
+                    category_title=category_title,
                 )
                 await max_messages.answer_callback(
                     event=event,
-                    notification="Введите тему заметки",
+                    notification="Введите внутренний комментарий",
                 )
                 prompt_sent = await event.message.answer(
-                    knowledge_base_texts.render_comment_prompt(
+                    specialist_texts.render_internal_comment_prompt(
                         ticket_id=ticket.ticket_id,
                         category_title=category_title,
                         object_text=_render_room_context_object_text(room_context),
                     ),
-                    attachments=[build_comment_cancel_keyboard(ticket.ticket_id)],
+                    attachments=[build_internal_comment_cancel_keyboard(ticket.ticket_id)],
                     format=ParseMode.HTML,
                 )
                 prompt_message_id = _extract_message_id(prompt_sent)
-                knowledge_comment_sessions.set_prompt_message_id(actor_id, prompt_message_id)
+                internal_comment_sessions.set_prompt_message_id(actor_id, prompt_message_id)
                 logger.info(
-                    "Knowledge comment session started: ticket_id=%s actor_id=%s "
+                    "Internal comment session started: ticket_id=%s actor_id=%s "
                     "prompt_message_id=%s session_id=%s",
                     ticket.ticket_id,
                     actor_id,

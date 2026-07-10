@@ -9,7 +9,7 @@ from app.helpdesk.repositories.location_repository import IssueCategoryRef
 from app.helpdesk.payloads import (
     ClarificationCancelPayload,
     CloseReplyCancelPayload,
-    KnowledgeCommentCancelPayload,
+    InternalCommentCancelPayload,
     SpecialistTicketPayload,
     UserMenuPayload,
 )
@@ -125,6 +125,14 @@ def build_jamaica_main_menu_keyboard(*, can_use_wifi_help: bool = False):
         ]
     )
     return ButtonsPayload(buttons=buttons).pack()
+
+
+def build_close_notification_menu_keyboard():
+    """Собирает кнопку возврата пользователя в его обычное меню."""
+
+    return ButtonsPayload(
+        buttons=[[CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())]]
+    ).pack()
 
 
 def build_jamaica_issue_categories_keyboard(categories: tuple[IssueCategoryRef, ...]):
@@ -488,12 +496,12 @@ def build_clarification_cancel_keyboard(ticket_id: str):
     ).pack()
 
 
-def build_comment_cancel_keyboard(ticket_id: str):
-    """Собирает клавиатуру отмены ввода комментария специалиста."""
+def build_internal_comment_cancel_keyboard(ticket_id: str):
+    """Собирает клавиатуру отмены внутреннего комментария."""
 
     return ButtonsPayload(
         buttons=[
-            [CallbackButton(text="Отмена", payload=KnowledgeCommentCancelPayload(ticket_id=ticket_id).pack())]
+            [CallbackButton(text="Отмена", payload=InternalCommentCancelPayload(ticket_id=ticket_id).pack())]
         ]
     ).pack()
 
@@ -600,7 +608,7 @@ def build_ticket_actions_keyboard(
             ],
             [
                 CallbackButton(
-                    text="Заметка",
+                    text="Комментарий",
                     payload=SpecialistTicketPayload(action="comment", ticket_id=ticket_id).pack(),
                 )
             ],
@@ -628,7 +636,7 @@ def build_ticket_actions_keyboard(
             ],
             [
                 CallbackButton(
-                    text="Заметка",
+                    text="Комментарий",
                     payload=SpecialistTicketPayload(action="comment", ticket_id=ticket_id).pack(),
                 )
             ],
@@ -643,7 +651,7 @@ def build_ticket_actions_keyboard(
             ],
             [
                 CallbackButton(
-                    text="Заметка",
+                    text="Комментарий",
                     payload=SpecialistTicketPayload(action="comment", ticket_id=ticket_id).pack(),
                 )
             ],
@@ -657,10 +665,7 @@ def build_ticket_actions_keyboard(
                 ticket_id=ticket_id,
             ).pack(),
         )
-        if status != TicketStatus.CLOSED:
-            action_rows[-1].append(history_button)
-        else:
-            action_rows.append([history_button])
+        action_rows.append([history_button])
 
     return ButtonsPayload(
         buttons=[

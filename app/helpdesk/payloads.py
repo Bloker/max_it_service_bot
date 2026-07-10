@@ -29,7 +29,7 @@ class CloseReplyCancelPayload(CallbackPayload, prefix="crc"):
     ticket_id: str
 
 
-class KnowledgeCommentCancelPayload(CallbackPayload, prefix="kcc"):
-    """Payload отмены ввода комментария специалиста."""
+class InternalCommentCancelPayload(CallbackPayload, prefix="tic"):
+    """Payload отмены ввода внутреннего комментария специалиста."""
 
     ticket_id: str

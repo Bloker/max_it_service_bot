@@ -3,20 +3,19 @@ import unittest
 from app.helpdesk.services.knowledge_article_create_session_service import (
     KnowledgeArticleCreateSessionService,
 )
-from app.helpdesk.services.knowledge_comment_session_service import (
-    KnowledgeCommentSessionService,
+from app.helpdesk.services.ticket_internal_comment_session_service import (
+    TicketInternalCommentSessionService,
 )
 
 
 class KnowledgeSessionsTests(unittest.TestCase):
-    def test_comment_session_round_trip(self) -> None:
-        service = KnowledgeCommentSessionService()
+    def test_internal_comment_session_round_trip(self) -> None:
+        service = TicketInternalCommentSessionService()
 
         session = service.start(
             actor_user_id=10,
             actor_name="Дмитрий",
             ticket_id="T-00100",
-            scope_id=1,
             hotel_id=2,
             category_id=3,
             location_id=4,
@@ -25,10 +24,8 @@ class KnowledgeSessionsTests(unittest.TestCase):
 
         self.assertEqual(service.get(10), session)
         self.assertEqual(service.get_by_ticket("T-00100"), session)
-        self.assertEqual(session.step, "waiting_title")
-        session = service.set_title(10, "Нет гудка")
-        self.assertEqual(session.step, "waiting_body")
-        self.assertEqual(session.title, "Нет гудка")
+        self.assertEqual(session.location_id, 4)
+        self.assertEqual(session.category_id, 3)
         service.finish(10)
         self.assertIsNone(service.get(10))
 

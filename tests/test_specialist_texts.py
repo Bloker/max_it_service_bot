@@ -3,10 +3,13 @@ from datetime import datetime, timezone
 
 from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.models.ticket import Ticket, TicketStatus
-from app.helpdesk.services.knowledge_base_service import TicketSpecialistComment
+from app.helpdesk.services.ticket_internal_comment_service import TicketInternalComment
 from app.helpdesk.services.ticket_clarification_service import TicketClarificationService
 from app.helpdesk.texts.specialist_texts import render_group_ticket, render_open_tickets_list
-from app.helpdesk.texts.user_texts import render_ticket_closed_notification
+from app.helpdesk.texts.user_texts import (
+    render_ticket_closed_notification,
+    render_ticket_closed_with_reply_notification,
+)
 
 
 class SpecialistTextsTests(unittest.TestCase):
@@ -203,27 +206,25 @@ class SpecialistTextsTests(unittest.TestCase):
         self.assertNotIn("Категория: Интернет", text)
         self.assertNotIn("Категория объекта:", text)
 
-    def test_render_group_ticket_includes_last_specialist_comment(self) -> None:
+    def test_render_group_ticket_includes_last_internal_comment(self) -> None:
         ticket = Ticket(
             id="T-00021",
             user_id=101,
             category="Интернет",
             text="Нет интернета",
         )
-        comment = TicketSpecialistComment(
+        comment = TicketInternalComment(
             ticket_id="T-00021",
-            actor_user_id=55,
-            actor_name="Дмитрий <IT>",
-            title="Нет гудка",
-            text="Проверен uplink & перезапущен access point",
+            body="Проверен uplink & перезапущен access point",
             created_at=datetime.now(timezone.utc),
         )
 
-        text = render_group_ticket(ticket, last_specialist_comment=comment)
+        text = render_group_ticket(ticket, last_internal_comment=comment)
 
-        self.assertIn("Последняя заметка:", text)
-        self.assertIn("Нет гудка", text)
+        self.assertIn("Внутренний комментарий:", text)
         self.assertIn("Проверен uplink &amp; перезапущен access point", text)
+        self.assertNotIn("Источник:", text)
+        self.assertNotIn("Статус:", text.split("Внутренний комментарий:", 1)[1])
 
     def test_render_group_ticket_uses_location_display_when_room_is_missing(self) -> None:
         ticket = Ticket(
@@ -263,7 +264,7 @@ class SpecialistTextsTests(unittest.TestCase):
         self.assertIn("Объект: Домик 15 (Интернет)", text)
         self.assertNotIn("Объект: Номер 15", text)
 
-    def test_render_ticket_closed_notification_formats_created_date(self) -> None:
+    def test_render_ticket_closed_notification_is_compact(self) -> None:
         ticket = Ticket(
             id="T-00001",
             user_id=101,
@@ -274,7 +275,15 @@ class SpecialistTextsTests(unittest.TestCase):
 
         text = render_ticket_closed_notification(ticket)
 
-        self.assertEqual(text, "Заявка №T-00001 от 13.05.2026 10:30 выполнена.")
+        self.assertEqual(text, "Заявка T-00001 выполнена.")
+
+    def test_render_ticket_closed_with_reply_uses_answer_label(self) -> None:
+        ticket = Ticket(id="T-00002", user_id=101, category="ТВ", text="Нет сигнала")
+
+        text = render_ticket_closed_with_reply_notification(ticket, "Перезапустили приставку")
+
+        self.assertIn("Ответ специалиста:", text)
+        self.assertNotIn("Комментарий специалиста:", text)
 
 
 if __name__ == "__main__":

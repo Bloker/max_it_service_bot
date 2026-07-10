@@ -3,6 +3,7 @@
 import logging
 
 from app.helpdesk.models.ticket import Ticket
+from app.helpdesk.keyboards.helpdesk_keyboards import build_close_notification_menu_keyboard
 from app.helpdesk.texts import user_texts
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ async def notify_user_ticket_closed(bot, ticket: Ticket) -> bool:
         await bot.send_message(
             user_id=ticket.user_id,
             text=user_texts.render_ticket_closed_notification(ticket),
+            attachments=[build_close_notification_menu_keyboard()],
         )
     except Exception:
         logger.exception(

@@ -1,11 +1,6 @@
 """Пользовательские тексты и форматирование сообщений HelpDesk."""
 
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
 from app.helpdesk.models.ticket import Ticket, TicketStatus
-
-_MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
 WELCOME_TEXT = (
@@ -45,29 +40,18 @@ def user_ticket_line(ticket: Ticket) -> str:
     return f"{ticket.ticket_id} • {ticket.category} • {ticket.status.value}"
 
 
-def _format_ticket_created_at(value: datetime) -> str:
-    """Форматирует дату заявки в часовом поясе пользователя."""
-
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=_MOSCOW_TZ)
-    return value.astimezone(_MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
-
-
 def render_ticket_closed_notification(ticket: Ticket) -> str:
     """Форматирует уведомление пользователю о выполненной заявке."""
 
-    return (
-        f"Заявка №{ticket.ticket_id} "
-        f"от {_format_ticket_created_at(ticket.created_at)} выполнена."
-    )
+    return f"Заявка {ticket.ticket_id} выполнена."
 
 
 def render_ticket_closed_with_reply_notification(ticket: Ticket, reply_text: str) -> str:
-    """Форматирует уведомление о закрытии заявки с комментарием специалиста."""
+    """Форматирует уведомление о закрытии заявки с ответом специалиста."""
 
     return (
         f"Заявка {ticket.ticket_id} выполнена.\n\n"
-        "Комментарий специалиста:\n"
+        "Ответ специалиста:\n"
         f"{reply_text}"
     )
 

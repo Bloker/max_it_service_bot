@@ -28,6 +28,7 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_attach_user_reply_keyboard,
     build_clarification_cancel_keyboard,
     build_clarification_reply_keyboard,
+    build_close_notification_menu_keyboard,
     build_close_reply_cancel_keyboard,
     build_jamaica_cancel_keyboard,
     build_jamaica_issue_categories_keyboard,
@@ -49,7 +50,8 @@ from app.helpdesk.runtime import (
     get_close_reply_session_service,
     get_knowledge_article_create_session_service,
     get_knowledge_base_service,
-    get_knowledge_comment_session_service,
+    get_ticket_internal_comment_session_service,
+    get_ticket_internal_comment_service,
     get_room_ticket_context_service,
     get_ticket_clarification_service,
     get_ticket_link_service,
@@ -293,7 +295,8 @@ def register(dp) -> None:
     ticket_links = get_ticket_link_service()
     clarification_sessions = get_clarification_session_service()
     close_reply_sessions = get_close_reply_session_service()
-    knowledge_comment_sessions = get_knowledge_comment_session_service()
+    internal_comment_sessions = get_ticket_internal_comment_session_service()
+    internal_comments = get_ticket_internal_comment_service()
     knowledge_article_sessions = get_knowledge_article_create_session_service()
     knowledge_base = get_knowledge_base_service()
     ticket_clarifications = get_ticket_clarification_service()
@@ -307,7 +310,7 @@ def register(dp) -> None:
         group_chat_id=cfg.bot.group_chat_id,
         max_messages=max_messages,
         clarifications=ticket_clarifications,
-        knowledge_base=knowledge_base,
+        internal_comments=internal_comments,
         room_contexts=room_ticket_contexts,
         observability=get_observability_service(),
     )
@@ -915,7 +918,7 @@ def register(dp) -> None:
                 specialist_message_id,
             )
 
-    async def _cleanup_knowledge_comment_messages(
+    async def _cleanup_internal_comment_messages(
         *,
         bot,
         ticket_id: str,
@@ -923,7 +926,7 @@ def register(dp) -> None:
         prompt_message_id: str | None,
         specialist_message_id: str | None,
     ) -> None:
-        """Удаляет временные сообщения сценария заметки специалиста."""
+        """Удаляет временные сообщения сценария внутреннего комментария."""
 
         prompt_deleted = await max_messages.delete_message(
             bot=bot,
@@ -935,7 +938,7 @@ def register(dp) -> None:
         )
         if not prompt_deleted:
             logger.warning(
-                "Knowledge comment prompt delete failed: ticket_id=%s "
+                "Internal comment prompt delete failed: ticket_id=%s "
                 "specialist_user_id=%s prompt_message_id=%s",
                 ticket_id,
                 specialist_user_id,
@@ -943,7 +946,7 @@ def register(dp) -> None:
             )
         if not specialist_deleted:
             logger.warning(
-                "Knowledge comment message delete failed: ticket_id=%s "
+                "Internal comment message delete failed: ticket_id=%s "
                 "specialist_user_id=%s specialist_message_id=%s",
                 ticket_id,
                 specialist_user_id,
@@ -1032,6 +1035,7 @@ def register(dp) -> None:
             bot=bot,
             user_id=ticket.user_id,
             text=user_message_text,
+            attachments=[build_close_notification_menu_keyboard()],
             text_format=None,
         )
         if not user_sent_mid:
@@ -1314,7 +1318,7 @@ def register(dp) -> None:
         )
         return True
 
-    async def _save_knowledge_comment(
+    async def _save_internal_comment(
         event: MessageCreated,
         *,
         actor_id: int,
@@ -1322,9 +1326,9 @@ def register(dp) -> None:
         text: str,
         attachments: list[Any],
     ) -> bool:
-        """Сохраняет внутреннюю заметку специалиста по заявке."""
+        """Сохраняет внутренний комментарий специалиста по заявке."""
 
-        session = knowledge_comment_sessions.get(actor_id)
+        session = internal_comment_sessions.get(actor_id)
         if session is None:
             return False
 
@@ -1333,8 +1337,8 @@ def register(dp) -> None:
         specialist_message_id = str(specialist_message_id) if specialist_message_id else None
 
         if text == "/cancel":
-            knowledge_comment_sessions.cancel(actor_id)
-            await _cleanup_knowledge_comment_messages(
+            internal_comment_sessions.cancel(actor_id)
+            await _cleanup_internal_comment_messages(
                 bot=bot,
                 ticket_id=session.ticket_id,
                 specialist_user_id=actor_id,
@@ -1347,19 +1351,16 @@ def register(dp) -> None:
             return False
 
         if attachments:
-            await event.message.answer("На этом шаге заметка принимается только текстом.")
+            await event.message.answer("Внутренний комментарий принимается только текстом.")
             return True
 
         if not text:
-            if session.step == "waiting_title":
-                await event.message.answer("Введите тему заметки.")
-            else:
-                await event.message.answer("Введите текст заметки.")
+            await event.message.answer("Введите текст внутреннего комментария.")
             return True
 
         ticket = await tickets.get_ticket(session.ticket_id)
         if ticket is None:
-            knowledge_comment_sessions.reset(actor_id)
+            internal_comment_sessions.cancel(actor_id)
             await event.message.answer(specialist_texts.NOT_FOUND_TEXT)
             return True
 
@@ -1370,46 +1371,12 @@ def register(dp) -> None:
             admin_ids=admin_ids,
             specialist_ids=specialist_ids,
         ):
-            knowledge_comment_sessions.reset(actor_id)
+            internal_comment_sessions.cancel(actor_id)
             await event.message.answer(specialist_texts.FORBIDDEN_TEXT)
             return True
 
-        if session.step == "waiting_title":
-            title = text.strip()
-            if len(title) > 120:
-                await event.message.answer("Тема должна быть не длиннее 120 символов.")
-                return True
-            knowledge_comment_sessions.set_title(actor_id, title)
-            prompt_text = knowledge_base_texts.render_comment_body_prompt(
-                ticket_id=session.ticket_id,
-                title=title,
-            )
-            prompt_keyboard = build_comment_cancel_keyboard(ticket.ticket_id)
-            prompt_updated = False
-            if session.prompt_message_id:
-                prompt_updated = await max_messages.edit_message(
-                    bot=bot,
-                    message_id=session.prompt_message_id,
-                    text=prompt_text,
-                    attachments=[prompt_keyboard],
-                    text_format=ParseMode.HTML,
-                )
-            if not prompt_updated:
-                prompt_message_id = await max_messages.send_message(
-                    bot=bot,
-                    chat_id=session.group_chat_id or group_chat_id,
-                    text=prompt_text,
-                    attachments=[prompt_keyboard],
-                    text_format=ParseMode.HTML,
-                )
-                if not prompt_message_id:
-                    await event.message.answer("Не удалось показать ввод заметки. Попробуйте ещё раз.")
-                    return True
-                knowledge_comment_sessions.set_prompt_message_id(actor_id, prompt_message_id)
-            return True
-
         if len(text.strip()) > 4000:
-            await event.message.answer("Текст заметки должен быть не длиннее 4000 символов.")
+            await event.message.answer("Комментарий должен быть не длиннее 4000 символов.")
             return True
 
         room_context = (
@@ -1418,43 +1385,48 @@ def register(dp) -> None:
             else None
         )
         actor_role = "admin" if is_admin(actor_id, admin_ids) else "IT specialist"
-        _, article = knowledge_base.save_ticket_note(
-            ticket=ticket,
-            actor_user_id=actor_id,
-            actor_name=actor_name,
-            title=session.title,
-            text=text,
-            room_context=room_context,
-            source_message_id=specialist_message_id,
-            actor_role=actor_role,
-        )
+        try:
+            internal_comments.save(
+                ticket=ticket,
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+                text=text,
+                room_context=room_context,
+                source_message_id=specialist_message_id,
+                actor_role=actor_role,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to save internal comment: ticket_id=%s actor_id=%s",
+                ticket.ticket_id,
+                actor_id,
+            )
+            await event.message.answer("Не удалось сохранить комментарий. Попробуйте ещё раз.")
+            return True
         await observability.ticket_event(
             ticket_id=ticket.ticket_id,
-            event_type="ticket_comment_saved",
+            event_type="ticket_internal_comment_saved",
             actor_user_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
             source="group_message",
             related_message_id=specialist_message_id,
-            metadata={"knowledge_article_created": bool(article)},
+            metadata={"visible_to_user": False, "added_to_knowledge_base": False},
         )
-        knowledge_comment_sessions.finish(actor_id)
+        internal_comment_sessions.finish(actor_id)
         await ticket_card_updates.update_group_ticket_card(
             bot=bot,
             ticket=ticket,
             notify=False,
         )
-        await _cleanup_knowledge_comment_messages(
+        await _cleanup_internal_comment_messages(
             bot=bot,
             ticket_id=ticket.ticket_id,
             specialist_user_id=actor_id,
             prompt_message_id=session.prompt_message_id,
             specialist_message_id=specialist_message_id,
         )
-        await event.message.answer(
-            f"{knowledge_base_texts.COMMENT_SAVE_NOTIFICATION}\n{escape(session.title)}",
-            format=ParseMode.HTML,
-        )
+        await event.message.answer("Комментарий сохранён.\n\nПользователю он не отправлен.")
         return True
 
     async def _relay_user_reply_to_group(
@@ -1872,14 +1844,14 @@ def register(dp) -> None:
             if clarification_sent:
                 return
 
-            knowledge_comment_saved = await _save_knowledge_comment(
+            internal_comment_saved = await _save_internal_comment(
                 event,
                 actor_id=actor_id,
                 actor_name=actor_name,
                 text=text,
                 attachments=relay_message_attachments,
             )
-            if knowledge_comment_saved:
+            if internal_comment_saved:
                 return
 
             if not text.startswith("/"):

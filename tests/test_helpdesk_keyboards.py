@@ -6,6 +6,7 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_clarification_cancel_keyboard,
     build_clarification_reply_keyboard,
     build_close_reply_cancel_keyboard,
+    build_close_notification_menu_keyboard,
     build_jamaica_issue_categories_keyboard,
     build_jamaica_cancel_keyboard,
     build_jamaica_main_menu_keyboard,
@@ -264,7 +265,7 @@ class HelpdeskKeyboardTests(unittest.TestCase):
 
         self.assertEqual(buttons[0][0].text, "Взять в работу")
         self.assertEqual(buttons[0][0].payload, "spc|take|T-00001")
-        self.assertEqual(buttons[1][0].text, "Заметка")
+        self.assertEqual(buttons[1][0].text, "Комментарий")
         self.assertEqual(buttons[1][0].payload, "spc|comment|T-00001")
         self.assertEqual(buttons[-1][0].text, "Не закрытые заявки")
 
@@ -276,7 +277,7 @@ class HelpdeskKeyboardTests(unittest.TestCase):
 
         labels = [button.text for row in keyboard.payload.buttons for button in row]
         self.assertIn("История номера", labels)
-        history_button = keyboard.payload.buttons[1][1]
+        history_button = keyboard.payload.buttons[2][0]
         self.assertEqual(history_button.text, "История номера")
         self.assertEqual(history_button.payload, "spc|room_history|T-00088")
 
@@ -299,10 +300,10 @@ class HelpdeskKeyboardTests(unittest.TestCase):
         self.assertEqual(buttons[1][0].text, "Закрыть с ответом")
         self.assertEqual(buttons[1][0].payload, "spc|close_with_reply|T-00002")
         self.assertEqual(buttons[2][0].text, "Запросить уточнение")
-        self.assertEqual(buttons[3][0].text, "Заметка")
+        self.assertEqual(buttons[3][0].text, "Комментарий")
         self.assertEqual(buttons[-1][0].text, "Не закрытые заявки")
 
-    def test_ticket_actions_keyboard_places_note_and_history_in_one_row(self) -> None:
+    def test_ticket_actions_keyboard_places_comment_before_history_in_separate_rows(self) -> None:
         ticket = Ticket(
             id="T-00004",
             user_id=104,
@@ -316,8 +317,15 @@ class HelpdeskKeyboardTests(unittest.TestCase):
 
         self.assertEqual(
             [button.text for button in keyboard.payload.buttons[3]],
-            ["Заметка", "История номера"],
+            ["Комментарий"],
         )
+        self.assertEqual([button.text for button in keyboard.payload.buttons[4]], ["История номера"])
+
+    def test_close_notification_menu_keyboard_contains_main_menu(self) -> None:
+        keyboard = build_close_notification_menu_keyboard()
+
+        self.assertEqual(keyboard.payload.buttons[0][0].text, "Главное меню")
+        self.assertEqual(keyboard.payload.buttons[0][0].payload, "usr|menu|")
 
     def test_ticket_actions_keyboard_keeps_room_history_for_closed_ticket(self) -> None:
         ticket = Ticket(
