@@ -1,4 +1,4 @@
-"""Справочные данные Джамайки для test-only seed и будущего flow."""
+"""Справочные данные Джамайки для каталогов и room-ticket flow."""
 
 from dataclasses import dataclass
 
@@ -34,6 +34,13 @@ JAMAICA_ISSUE_CATEGORIES: tuple[JamaicaIssueCategorySeed, ...] = (
     JamaicaIssueCategorySeed(code="internet", title="Интернет", sort_order=30),
     JamaicaIssueCategorySeed(code="lock", title="Замок", sort_order=40),
     JamaicaIssueCategorySeed(code="other", title="Прочее", sort_order=50),
+)
+
+JAMAICA_KNOWLEDGE_SCOPES: tuple[tuple[str, str, str, int], ...] = (
+    ("jamaica", "Джамайка", "hotel", 10),
+    ("general_it", "Общее IT", "global", 20),
+    ("infrastructure", "Сеть и инфраструктура", "infrastructure", 30),
+    ("systems", "Системы", "system", 40),
 )
 
 

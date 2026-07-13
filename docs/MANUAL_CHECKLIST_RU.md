@@ -211,3 +211,16 @@
 10. Нажать у пользователя `Главное меню`: должно открыться Jamaica-меню с
     кнопками `Заявка по номеру`, `Прочее`, `Мои заявки`, `Помощь` и, когда
     включена функция, `Проблема Wi-Fi у гостя`.
+
+## N. Stage 4.8 Production Rollout
+1. До отдельного разрешения владельца не выполнять production writes, candidate DB,
+   backup, migration, deploy или restart `max-it-bot.service`.
+2. Использовать только `scripts/seed_jamaica_production_catalog.py` с явным
+   `--allow-production`; `seed_jamaica_knowledge_base_test_data.py` в production
+   не запускать.
+3. Перед rollout применить production migrations и production-safe seed сначала
+   к candidate DB из свежего backup production.
+4. В candidate DB проверить: 253 Jamaica locations, 5 категорий, 4 knowledge scopes,
+   `knowledge_articles=0`, KB media `=0`, reconciliation без расхождений.
+5. После отдельного разрешения проверить production KB перед migration. Если в ней
+   уже есть реальные статьи или KB media, остановиться и показать результат владельцу.

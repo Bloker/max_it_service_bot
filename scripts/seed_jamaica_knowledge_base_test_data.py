@@ -14,6 +14,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from app.infrastructure.database.psycopg_connection import connect_postgres  # noqa: E402
+from app.helpdesk.services.jamaica_seed_data import JAMAICA_KNOWLEDGE_SCOPES  # noqa: E402
 from config.config import get_config  # noqa: E402
 
 SEED_ITEMS = (
@@ -31,12 +32,7 @@ SEED_ITEMS = (
     ("other", "Нестандартная заявка", "Уточнить симптом, номер и время проявления проблемы.", 120),
 )
 
-SCOPE_SEED_ITEMS = (
-    ("jamaica", "Джамайка", "hotel", 10),
-    ("general_it", "Общее IT", "global", 20),
-    ("infrastructure", "Сеть и инфраструктура", "infrastructure", 30),
-    ("systems", "Системы", "system", 40),
-)
+SCOPE_SEED_ITEMS = JAMAICA_KNOWLEDGE_SCOPES
 
 
 def main() -> None:

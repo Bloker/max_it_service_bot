@@ -1,5 +1,4 @@
--- Test-only schema for Jamaica room-ticket flow.
--- Apply to test_dev_max only until owner approves production rollout.
+-- Jamaica room-ticket schema. Apply only through the approved rollout procedure.
 
 CREATE TABLE IF NOT EXISTS helpdesk.locations (
     id BIGSERIAL PRIMARY KEY,

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app.helpdesk.services.jamaica_seed_data import (
     JAMAICA_ISSUE_CATEGORIES,
+    JAMAICA_KNOWLEDGE_SCOPES,
     build_jamaica_locations,
     normalize_room_number,
 )
@@ -57,6 +58,12 @@ class JamaicaSeedDataTests(unittest.TestCase):
             ],
         )
 
+    def test_knowledge_scopes_are_production_catalog_only(self) -> None:
+        self.assertEqual(
+            [scope[0] for scope in JAMAICA_KNOWLEDGE_SCOPES],
+            ["jamaica", "general_it", "infrastructure", "systems"],
+        )
+
     def test_room_number_normalization_keeps_string_semantics(self) -> None:
         self.assertEqual(normalize_room_number("  101  А  "), "101 А")
 
@@ -101,6 +108,34 @@ class JamaicaSeedDataTests(unittest.TestCase):
         self.assertEqual(payload["hotel_code"], "jamaica")
         self.assertEqual(len(payload["locations"]), 253)
         self.assertEqual(len(payload["categories"]), 5)
+
+    def test_production_catalog_seed_refuses_without_explicit_flag(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "scripts/seed_jamaica_production_catalog.py"],
+            cwd=ROOT_DIR,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Refusing to write catalog data", result.stderr)
+
+    def test_production_catalog_seed_dry_run_contains_no_ticket_or_kb_writes(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "scripts/seed_jamaica_production_catalog.py", "--dry-run-json"],
+            cwd=ROOT_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        payload = json.loads(result.stdout)
+
+        self.assertEqual(len(payload["locations"]), 253)
+        self.assertEqual(len(payload["categories"]), 5)
+        self.assertEqual(len(payload["knowledge_scopes"]), 4)
+        self.assertIn("helpdesk.knowledge_articles", payload["does_not_create"])
+        self.assertIn("helpdesk.tickets", payload["does_not_create"])
 
 
 class LocationServiceTests(unittest.TestCase):
