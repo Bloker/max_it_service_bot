@@ -22,3 +22,12 @@ CREATE INDEX IF NOT EXISTS idx_helpdesk_knowledge_articles_source_ticket
 
 CREATE INDEX IF NOT EXISTS idx_helpdesk_knowledge_articles_source_location
     ON helpdesk.knowledge_articles(source_location_id);
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'maxbot') THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA helpdesk TO maxbot';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE helpdesk.knowledge_articles TO maxbot';
+        EXECUTE 'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA helpdesk TO maxbot';
+    END IF;
+END $$;

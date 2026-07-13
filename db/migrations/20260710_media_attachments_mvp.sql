@@ -34,3 +34,12 @@ ON helpdesk.media_attachments (hotel_id, location_id);
 
 CREATE INDEX IF NOT EXISTS idx_media_attachments_created_at
 ON helpdesk.media_attachments (created_at DESC);
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'maxbot') THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA helpdesk TO maxbot';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE helpdesk.media_attachments TO maxbot';
+        EXECUTE 'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA helpdesk TO maxbot';
+    END IF;
+END $$;

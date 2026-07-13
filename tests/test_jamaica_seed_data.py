@@ -137,6 +137,25 @@ class JamaicaSeedDataTests(unittest.TestCase):
         self.assertIn("helpdesk.knowledge_articles", payload["does_not_create"])
         self.assertIn("helpdesk.tickets", payload["does_not_create"])
 
+    def test_stage_migrations_grant_runtime_access_to_maxbot(self) -> None:
+        migration_dir = ROOT_DIR / "db" / "migrations"
+        expected_grants = {
+            "20260707_jamaica_room_ticket_context.sql": "auth.hotels",
+            "20260708_knowledge_base_mvp.sql": "helpdesk.knowledge_articles",
+            "20260709_knowledge_base_scopes.sql": "helpdesk.knowledge_scopes",
+            "20260710_media_attachments_mvp.sql": "helpdesk.media_attachments",
+        }
+
+        for migration_name, table_name in expected_grants.items():
+            content = (migration_dir / migration_name).read_text(encoding="utf-8")
+            self.assertIn("TO maxbot", content)
+            self.assertIn(table_name, content)
+
+        room_context_migration = (
+            migration_dir / "20260707_jamaica_room_ticket_context.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ALL SEQUENCES IN SCHEMA auth", room_context_migration)
+
 
 class LocationServiceTests(unittest.TestCase):
     def test_service_normalizes_room_number_before_repository_lookup(self) -> None:

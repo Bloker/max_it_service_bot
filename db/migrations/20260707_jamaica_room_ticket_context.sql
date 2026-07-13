@@ -83,3 +83,17 @@ ON helpdesk.ticket_context(hotel_id, issue_category_id);
 
 CREATE INDEX IF NOT EXISTS idx_helpdesk_ticket_context_created_at
 ON helpdesk.ticket_context(created_at);
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'maxbot') THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA auth, helpdesk TO maxbot';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE auth.hotels TO maxbot';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE helpdesk.locations TO maxbot';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE helpdesk.issue_categories TO maxbot';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE helpdesk.hotel_issue_categories TO maxbot';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE helpdesk.ticket_context TO maxbot';
+        EXECUTE 'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA auth TO maxbot';
+        EXECUTE 'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA helpdesk TO maxbot';
+    END IF;
+END $$;

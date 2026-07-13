@@ -224,3 +224,7 @@
    `knowledge_articles=0`, KB media `=0`, reconciliation без расхождений.
 5. После отдельного разрешения проверить production KB перед migration. Если в ней
    уже есть реальные статьи или KB media, остановиться и показать результат владельцу.
+6. Candidate dry-run 2026-07-13: пройден. `maxbot` должен иметь grants на новые
+   Jamaica/KB/media таблицы и sequences; это обеспечивают Stage 4 migrations.
+7. Перед production deploy повторить candidate-порядок migrations через PostgreSQL
+   superuser, затем запустить production-safe seed как runtime-роль `maxbot`.

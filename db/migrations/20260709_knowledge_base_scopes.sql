@@ -36,3 +36,12 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_articles_scope_category_active
     ON helpdesk.knowledge_articles(scope_id, category_id, is_active, sort_order, created_at DESC);
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'maxbot') THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA helpdesk TO maxbot';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE helpdesk.knowledge_scopes TO maxbot';
+        EXECUTE 'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA helpdesk TO maxbot';
+    END IF;
+END $$;
