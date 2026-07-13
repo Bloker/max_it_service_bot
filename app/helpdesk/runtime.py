@@ -11,6 +11,8 @@ from app.helpdesk.services.knowledge_article_create_session_service import (
     KnowledgeArticleCreateSessionService,
 )
 from app.helpdesk.services.knowledge_base_service import KnowledgeBaseService
+from app.helpdesk.services.media_attachment_service import MediaAttachmentService
+from app.helpdesk.services.media_collection_session_service import MediaCollectionSessionService
 from app.helpdesk.services.ticket_internal_comment_session_service import (
     TicketInternalCommentSessionService,
 )
@@ -34,6 +36,8 @@ _ticket_internal_comment_session_service: TicketInternalCommentSessionService | 
 _ticket_internal_comment_service: TicketInternalCommentService | None = None
 _knowledge_article_create_session_service: KnowledgeArticleCreateSessionService | None = None
 _knowledge_base_service: KnowledgeBaseService | None = None
+_media_attachment_service: MediaAttachmentService | None = None
+_media_collection_session_service: MediaCollectionSessionService | None = None
 _ticket_clarification_service: TicketClarificationService | None = None
 _user_reply_session_service: UserReplySessionService | None = None
 _room_ticket_context_service = None
@@ -183,7 +187,10 @@ def get_ticket_internal_comment_service() -> TicketInternalCommentService:
                 sslmode=cfg.tickets.postgres_sslmode,
                 connect_timeout_sec=cfg.tickets.postgres_connect_timeout_sec,
             )
-        _ticket_internal_comment_service = TicketInternalCommentService(repository)
+        _ticket_internal_comment_service = TicketInternalCommentService(
+            repository,
+            media_attachments=get_media_attachment_service(),
+        )
     return _ticket_internal_comment_service
 
 
@@ -194,6 +201,49 @@ def get_knowledge_article_create_session_service() -> KnowledgeArticleCreateSess
     if _knowledge_article_create_session_service is None:
         _knowledge_article_create_session_service = KnowledgeArticleCreateSessionService()
     return _knowledge_article_create_session_service
+
+
+def get_media_collection_session_service() -> MediaCollectionSessionService:
+    """Возвращает singleton 15-секундного окна сбора media."""
+
+    global _media_collection_session_service
+    if _media_collection_session_service is None:
+        cfg = get_config()
+        _media_collection_session_service = MediaCollectionSessionService(
+            collection_window_sec=cfg.media.collection_window_sec
+        )
+    return _media_collection_session_service
+
+
+def get_media_attachment_service() -> MediaAttachmentService:
+    """Возвращает сервис media metadata для PostgreSQL backend."""
+
+    global _media_attachment_service
+    if _media_attachment_service is not None:
+        return _media_attachment_service
+
+    cfg = get_config()
+    repository = None
+    if cfg.tickets.backend == "postgres":
+        from app.helpdesk.repositories.postgres_media_attachment_repository import (
+            PostgresMediaAttachmentRepository,
+        )
+
+        repository = PostgresMediaAttachmentRepository(
+            host=cfg.tickets.postgres_host,
+            port=cfg.tickets.postgres_port,
+            database=cfg.tickets.postgres_db,
+            user=cfg.tickets.postgres_user,
+            password=cfg.tickets.postgres_password,
+            sslmode=cfg.tickets.postgres_sslmode,
+            connect_timeout_sec=cfg.tickets.postgres_connect_timeout_sec,
+        )
+    _media_attachment_service = MediaAttachmentService(
+        repository=repository,
+        max_attachments_per_item=cfg.media.max_attachments_per_item,
+        max_file_size_mb=cfg.media.max_file_size_mb,
+    )
+    return _media_attachment_service
 
 
 def get_ticket_clarification_service() -> TicketClarificationService:

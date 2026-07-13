@@ -250,29 +250,26 @@ class KnowledgeBaseService:
             created_at=datetime.now(),
         )
 
-        article = None
-        if self._repository is not None:
-            try:
-                scope_id = self._resolve_scope_id_for_comment(room_context)
-                category_id = room_context.issue_category_id if room_context else None
-                if scope_id is None or category_id is None:
-                    raise RuntimeError("Ticket note requires room scope and category")
-                article = self.create_article_from_ticket_note(
-                    ticket_key=ticket.ticket_id,
-                    scope_id=scope_id,
-                    hotel_id=room_context.hotel_id if room_context else None,
-                    category_id=category_id,
-                    title=normalized_title,
-                    body=normalized_text,
-                    source_location_id=room_context.location_id if room_context else None,
-                    author_user_id=actor_user_id,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to create knowledge article from ticket note: ticket_id=%s actor_user_id=%s",
-                    ticket.ticket_id,
-                    actor_user_id,
-                )
+        if self._repository is None:
+            raise RuntimeError("Knowledge base repository is not configured")
+
+        scope_id = self._resolve_scope_id_for_comment(room_context)
+        category_id = room_context.issue_category_id if room_context else None
+        if scope_id is None or category_id is None:
+            raise RuntimeError("Ticket note requires room scope and category")
+
+        # Статья БЗ - обязательный результат сценария [Заметка]. Не скрываем
+        # ошибку записи, иначе карточка ошибочно сообщает об успешном сохранении.
+        article = self.create_article_from_ticket_note(
+            ticket_key=ticket.ticket_id,
+            scope_id=scope_id,
+            hotel_id=room_context.hotel_id if room_context else None,
+            category_id=category_id,
+            title=normalized_title,
+            body=normalized_text,
+            source_location_id=room_context.location_id if room_context else None,
+            author_user_id=actor_user_id,
+        )
 
         if self._ticket_contexts is not None:
             try:

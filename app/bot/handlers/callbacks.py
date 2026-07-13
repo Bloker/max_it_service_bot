@@ -63,6 +63,8 @@ from app.helpdesk.runtime import (
     get_close_reply_session_service,
     get_knowledge_article_create_session_service,
     get_knowledge_base_service,
+    get_media_attachment_service,
+    get_media_collection_session_service,
     get_ticket_internal_comment_session_service,
     get_ticket_internal_comment_service,
     get_room_history_service,
@@ -286,6 +288,8 @@ def register(dp) -> None:
     internal_comments = get_ticket_internal_comment_service()
     knowledge_article_sessions = get_knowledge_article_create_session_service()
     knowledge_base = get_knowledge_base_service()
+    media_attachments = get_media_attachment_service()
+    media_collection_sessions = get_media_collection_session_service()
     ticket_clarifications = get_ticket_clarification_service()
     user_reply_sessions = get_user_reply_session_service()
     room_ticket_contexts = get_room_ticket_context_service()
@@ -619,6 +623,27 @@ def register(dp) -> None:
             return
 
         if action == "kb_cancel":
+            media_session = media_collection_sessions.get(user_id)
+            if media_session is not None and media_session.state == "collecting_knowledge_article":
+                media_collection_sessions.cancel(user_id)
+                await max_messages.delete_message(
+                    bot=event._ensure_bot(),
+                    message_id=getattr(getattr(event.message, "body", None), "mid", None),
+                )
+                if media_session.source_kind == "ticket_note":
+                    await event.answer(notification="Добавление заметки отменено")
+                    return
+                await _open_knowledge_base_menu(event, user_id)
+                return
+            session = knowledge_article_sessions.get(user_id)
+            if session is not None and session.source_kind == "ticket_note":
+                knowledge_article_sessions.reset(user_id)
+                await max_messages.delete_message(
+                    bot=event._ensure_bot(),
+                    message_id=getattr(getattr(event.message, "body", None), "mid", None),
+                )
+                await event.answer(notification="Добавление заметки отменено")
+                return
             knowledge_article_sessions.reset(user_id)
             await _open_knowledge_base_menu(event, user_id)
             return
@@ -1151,7 +1176,7 @@ def register(dp) -> None:
             )
             return
 
-        if action == "kb_article":
+        if action in {"kb_article", "kb_media"}:
             if not can_view_service_functions(
                 user_id=user_id,
                 admin_ids=admin_ids,
@@ -1176,14 +1201,44 @@ def register(dp) -> None:
             if scope is None or category is None or article is None:
                 await event.answer(notification="Статья не найдена")
                 return
+            if action == "kb_media":
+                uploads = media_attachments.build_upload_attachments(
+                    owner_type="knowledge_article",
+                    owner_id=article.id,
+                )
+                if not uploads:
+                    await event.answer(
+                        notification="Просмотр вложений будет доступен после настройки media serving."
+                    )
+                    return
+                for upload in uploads:
+                    await max_messages.send_message(
+                        bot=event._ensure_bot(),
+                        user_id=user_id,
+                        text="Вложение из базы знаний",
+                        attachments=[upload],
+                        text_format=None,
+                    )
+                await event.answer(notification="Вложения отправлены")
+                return
+            attachment_counts = media_attachments.count_attachments(
+                owner_type="knowledge_article",
+                owner_id=article.id,
+            )
             await _update_kb_message(
                 event,
                 text=knowledge_base_texts.render_kb_article(
                     article,
                     scope_title=scope.title,
                     category_title=category.title,
+                    attachment_counts=attachment_counts,
                 ),
-                keyboard=build_knowledge_article_view_keyboard(scope_id, category_id),
+                keyboard=build_knowledge_article_view_keyboard(
+                    scope_id,
+                    category_id,
+                    article_id=article.id,
+                    has_attachments=attachment_counts.total_count > 0,
+                ),
                 notification="Открыта статья",
             )
             return
@@ -1490,12 +1545,12 @@ def register(dp) -> None:
                     room_context=room_context,
                 )
                 action_keyboard = build_ticket_actions_keyboard(ticket, room_context=room_context)
-                media_attachments = list(draft.attachments or [])
+                draft_attachments = list(draft.attachments or [])
                 try:
                     group_sent = await event._ensure_bot().send_message(
                         chat_id=cfg.bot.group_chat_id,
                         text=ticket_text,
-                        attachments=[*media_attachments, action_keyboard],
+                        attachments=[*draft_attachments, action_keyboard],
                         format=ParseMode.HTML,
                     )
                 except Exception:
@@ -1506,11 +1561,11 @@ def register(dp) -> None:
                         cfg.bot.group_chat_id,
                     )
                     try:
-                        if media_attachments:
+                        if draft_attachments:
                             group_sent = await event._ensure_bot().send_message(
                                 chat_id=cfg.bot.group_chat_id,
                                 text=ticket_text,
-                                attachments=media_attachments,
+                                attachments=draft_attachments,
                                 format=ParseMode.HTML,
                             )
                         else:
@@ -1664,6 +1719,26 @@ def register(dp) -> None:
         """Отменяет ожидающий ввод ответа при закрытии."""
 
         actor_id = int(event.callback.user.user_id)
+        media_session = media_collection_sessions.get(actor_id)
+        if media_session is not None and media_session.state == "collecting_close_reply":
+            if media_session.ticket_key != payload.ticket_id:
+                await max_messages.answer_callback(
+                    event=event,
+                    notification="Это закрытие с ответом начал другой специалист",
+                )
+                return
+            media_collection_sessions.cancel(actor_id)
+            await max_messages.answer_callback(
+                event=event,
+                notification="Закрытие с ответом отменено",
+            )
+            cleanup_ids = [media_session.prompt_message_id, *media_session.transient_message_ids]
+            for message_id in dict.fromkeys(item for item in cleanup_ids if item):
+                await max_messages.delete_message(
+                    bot=event._ensure_bot(),
+                    message_id=message_id,
+                )
+            return
         session = close_reply_sessions.get_by_ticket(payload.ticket_id)
         if session is None:
             await max_messages.answer_callback(
@@ -1712,6 +1787,38 @@ def register(dp) -> None:
         """Отменяет ожидающий ввод внутреннего комментария."""
 
         actor_id = int(event.callback.user.user_id)
+        media_session = media_collection_sessions.get(actor_id)
+        if media_session is not None and media_session.state == "collecting_ticket_comment":
+            if media_session.ticket_key != payload.ticket_id:
+                await max_messages.answer_callback(
+                    event=event,
+                    notification="Этот комментарий начал другой специалист",
+                )
+                return
+            media_collection_sessions.cancel(actor_id)
+            await max_messages.answer_callback(
+                event=event,
+                notification="Комментарий отменён",
+            )
+            cleanup_ids: list[str] = []
+            if media_session.prompt_message_id:
+                cleanup_ids.append(media_session.prompt_message_id)
+            for message_id in media_session.transient_message_ids:
+                if message_id and message_id not in cleanup_ids:
+                    cleanup_ids.append(message_id)
+            for message_id in cleanup_ids:
+                deleted = await max_messages.delete_message(
+                    bot=event._ensure_bot(),
+                    message_id=message_id,
+                )
+                if not deleted:
+                    logger.warning(
+                        "Internal comment cancel cleanup failed: actor_id=%s ticket_id=%s message_id=%s",
+                        actor_id,
+                        payload.ticket_id,
+                        message_id,
+                    )
+            return
         session = internal_comment_sessions.get_by_ticket(payload.ticket_id)
         if session is None:
             await max_messages.answer_callback(
@@ -1945,7 +2052,7 @@ def register(dp) -> None:
             )
             return
 
-        if action in {"release", "close", "clarify", "close_with_reply", "comment"}:
+        if action in {"release", "close", "clarify", "close_with_reply", "comment", "note"}:
             ticket = await tickets.get_ticket(ticket_id)
             if ticket is None:
                 await max_messages.answer_callback(
@@ -1974,7 +2081,7 @@ def register(dp) -> None:
                 )
                 return
 
-            if action == "comment" and ticket.status == TicketStatus.CLOSED:
+            if action in {"comment", "note"} and ticket.status == TicketStatus.CLOSED:
                 await max_messages.answer_callback(
                     event=event,
                     notification=specialist_texts.ALREADY_CLOSED_TEXT,
@@ -1982,6 +2089,25 @@ def register(dp) -> None:
                 return
 
             if action == "comment":
+                previous_note_session = knowledge_article_sessions.get(actor_id)
+                if previous_note_session and previous_note_session.prompt_message_id:
+                    await max_messages.delete_message(
+                        bot=event._ensure_bot(),
+                        message_id=previous_note_session.prompt_message_id,
+                    )
+                if previous_note_session is not None:
+                    knowledge_article_sessions.reset(actor_id)
+                previous_media_session = media_collection_sessions.get(actor_id)
+                if (
+                    previous_media_session is not None
+                    and previous_media_session.state == "collecting_knowledge_article"
+                ):
+                    media_collection_sessions.cancel(actor_id)
+                    if previous_media_session.prompt_message_id:
+                        await max_messages.delete_message(
+                            bot=event._ensure_bot(),
+                            message_id=previous_media_session.prompt_message_id,
+                        )
                 existing_session = internal_comment_sessions.get_by_ticket(ticket.ticket_id)
                 if existing_session and existing_session.actor_user_id != actor_id:
                     await max_messages.answer_callback(
@@ -2033,6 +2159,94 @@ def register(dp) -> None:
                 internal_comment_sessions.set_prompt_message_id(actor_id, prompt_message_id)
                 logger.info(
                     "Internal comment session started: ticket_id=%s actor_id=%s "
+                    "prompt_message_id=%s session_id=%s",
+                    ticket.ticket_id,
+                    actor_id,
+                    prompt_message_id,
+                    session.session_id,
+                )
+                return
+
+            if action == "note":
+                if not knowledge_base.is_available():
+                    await max_messages.answer_callback(
+                        event=event,
+                        notification=knowledge_base_texts.KB_UNAVAILABLE_TEXT,
+                    )
+                    return
+                room_context = (
+                    room_ticket_contexts.get_context(ticket.ticket_id)
+                    if room_ticket_contexts is not None
+                    else None
+                )
+                scope_id = knowledge_base.resolve_scope_id_for_room_context(room_context)
+                if room_context is None or scope_id is None or room_context.issue_category_id is None:
+                    await max_messages.answer_callback(
+                        event=event,
+                        notification="Заметка доступна только для заявок по номеру или домику",
+                    )
+                    return
+                scope = knowledge_base.get_scope(scope_id)
+                category_title = (
+                    room_context.category_snapshot
+                    if room_context and room_context.category_snapshot
+                    else ticket.category
+                )
+                previous_comment_session = internal_comment_sessions.get(actor_id)
+                if previous_comment_session and previous_comment_session.prompt_message_id:
+                    await max_messages.delete_message(
+                        bot=event._ensure_bot(),
+                        message_id=previous_comment_session.prompt_message_id,
+                    )
+                if previous_comment_session is not None:
+                    internal_comment_sessions.cancel(actor_id)
+                previous_media_session = media_collection_sessions.get(actor_id)
+                if (
+                    previous_media_session is not None
+                    and previous_media_session.state == "collecting_ticket_comment"
+                ):
+                    media_collection_sessions.cancel(actor_id)
+                    if previous_media_session.prompt_message_id:
+                        await max_messages.delete_message(
+                            bot=event._ensure_bot(),
+                            message_id=previous_media_session.prompt_message_id,
+                        )
+                previous_session = knowledge_article_sessions.get(actor_id)
+                if previous_session and previous_session.prompt_message_id:
+                    await max_messages.delete_message(
+                        bot=event._ensure_bot(),
+                        message_id=previous_session.prompt_message_id,
+                    )
+                session = knowledge_article_sessions.start(
+                    actor_user_id=actor_id,
+                    chat_id=cfg.bot.group_chat_id,
+                    hotel_id=room_context.hotel_id,
+                    scope_id=scope_id,
+                    scope_code=scope.code if scope else None,
+                    scope_title=scope.title if scope else None,
+                    category_id=room_context.issue_category_id,
+                    category_code="",
+                    category_title=category_title,
+                    ticket_id=ticket.ticket_id,
+                    source_kind="ticket_note",
+                )
+                await max_messages.answer_callback(
+                    event=event,
+                    notification="Введите тему заметки",
+                )
+                prompt_sent = await event.message.answer(
+                    knowledge_base_texts.render_comment_prompt(
+                        ticket_id=ticket.ticket_id,
+                        category_title=category_title,
+                        object_text=_render_room_context_object_text(room_context),
+                    ),
+                    attachments=[build_knowledge_cancel_keyboard()],
+                    format=ParseMode.HTML,
+                )
+                prompt_message_id = _extract_message_id(prompt_sent)
+                knowledge_article_sessions.set_prompt_message_id(actor_id, prompt_message_id)
+                logger.info(
+                    "Ticket note session started: ticket_id=%s actor_id=%s "
                     "prompt_message_id=%s session_id=%s",
                     ticket.ticket_id,
                     actor_id,
@@ -2117,12 +2331,17 @@ def register(dp) -> None:
                 )
                 await max_messages.answer_callback(
                     event=event,
-                    notification="Введите сообщение пользователю следующим сообщением",
+                    notification="Введите ответ, фото, видео или файл",
                 )
                 prompt_message_id = await max_messages.send_message(
                     bot=event._ensure_bot(),
                     chat_id=cfg.bot.group_chat_id,
-                    text="Введите сообщение пользователю о выполненной работе.",
+                    text=(
+                        "Введите сообщение пользователю о выполненной работе.\n\n"
+                        "Можно приложить фото, видео или файл. Всё, что придёт "
+                        "в течение 15 секунд после последнего сообщения, будет "
+                        "отправлено пользователю вместе с ответом."
+                    ),
                     attachments=[build_close_reply_cancel_keyboard(ticket.ticket_id)],
                     text_format=None,
                 )

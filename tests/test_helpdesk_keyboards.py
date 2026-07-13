@@ -190,6 +190,17 @@ class HelpdeskKeyboardTests(unittest.TestCase):
         self.assertEqual(keyboard.payload.buttons[0][0].text, "Назад к категории")
         self.assertEqual(keyboard.payload.buttons[0][0].payload, "usr|kb_cat|1:10")
 
+    def test_knowledge_article_view_keyboard_can_show_open_media_button(self) -> None:
+        keyboard = build_knowledge_article_view_keyboard(
+            1,
+            10,
+            article_id=77,
+            has_attachments=True,
+        )
+
+        self.assertEqual(keyboard.payload.buttons[0][0].text, "Открыть вложения")
+        self.assertEqual(keyboard.payload.buttons[0][0].payload, "usr|kb_media|1:10:77")
+
     def test_knowledge_add_scope_keyboard_has_cancel(self) -> None:
         keyboard = build_knowledge_add_scope_keyboard(
             (KnowledgeScope(1, "jamaica", "Джамайка", KnowledgeScopeType.HOTEL),)
@@ -277,6 +288,10 @@ class HelpdeskKeyboardTests(unittest.TestCase):
 
         labels = [button.text for row in keyboard.payload.buttons for button in row]
         self.assertIn("История номера", labels)
+        self.assertEqual(
+            [button.text for button in keyboard.payload.buttons[1]],
+            ["Комментарий", "Заметка"],
+        )
         history_button = keyboard.payload.buttons[2][0]
         self.assertEqual(history_button.text, "История номера")
         self.assertEqual(history_button.payload, "spc|room_history|T-00088")
@@ -303,7 +318,7 @@ class HelpdeskKeyboardTests(unittest.TestCase):
         self.assertEqual(buttons[3][0].text, "Комментарий")
         self.assertEqual(buttons[-1][0].text, "Не закрытые заявки")
 
-    def test_ticket_actions_keyboard_places_comment_before_history_in_separate_rows(self) -> None:
+    def test_ticket_actions_keyboard_places_comment_and_note_before_history(self) -> None:
         ticket = Ticket(
             id="T-00004",
             user_id=104,
@@ -317,7 +332,7 @@ class HelpdeskKeyboardTests(unittest.TestCase):
 
         self.assertEqual(
             [button.text for button in keyboard.payload.buttons[3]],
-            ["Комментарий"],
+            ["Комментарий", "Заметка"],
         )
         self.assertEqual([button.text for button in keyboard.payload.buttons[4]], ["История номера"])
 

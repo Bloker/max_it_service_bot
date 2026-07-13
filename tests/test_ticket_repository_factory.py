@@ -12,6 +12,7 @@ from config.config import (
     BotConfig,
     LogsConfig,
     MaxApiRetryConfig,
+    MediaConfig,
     NetariumConfig,
     NetworkPolicyConfig,
     NetworkToolsConfig,
@@ -87,6 +88,12 @@ def _config(schema_mode: str) -> AppConfig:
             audit_enabled=False,
             ticket_events_enabled=False,
             network_tool_runs_enabled=False,
+        ),
+        media=MediaConfig(
+            storage_root="./data/media",
+            collection_window_sec=15,
+            max_attachments_per_item=10,
+            max_file_size_mb=50,
         ),
     )
 

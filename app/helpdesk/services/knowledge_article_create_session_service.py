@@ -22,6 +22,8 @@ class KnowledgeArticleCreateSession:
     started_at: datetime
     title: str = ""
     prompt_message_id: str | None = None
+    ticket_id: str | None = None
+    source_kind: str = "manual"
     session_id: str = ""
 
 
@@ -44,6 +46,8 @@ class KnowledgeArticleCreateSessionService:
         category_id: int | None = None,
         category_code: str | None = None,
         category_title: str | None = None,
+        ticket_id: str | None = None,
+        source_kind: str = "manual",
     ) -> KnowledgeArticleCreateSession:
         """Создает новую сессию ручного добавления статьи."""
 
@@ -65,6 +69,8 @@ class KnowledgeArticleCreateSessionService:
             category_title=category_title,
             step=step,
             started_at=datetime.now(tz=timezone.utc),
+            ticket_id=ticket_id,
+            source_kind=source_kind,
             session_id=uuid4().hex,
         )
         self._sessions[actor_user_id] = session

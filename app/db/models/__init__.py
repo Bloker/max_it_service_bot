@@ -4,6 +4,7 @@ from app.db.base import Base
 from app.db.models.helpdesk import (
     KnowledgeArticle,
     KnowledgeScope,
+    MediaAttachment,
     Ticket,
     TicketAttachment,
     TicketComment,
@@ -17,6 +18,7 @@ __all__ = [
     "Base",
     "KnowledgeArticle",
     "KnowledgeScope",
+    "MediaAttachment",
     "NetworkToolRun",
     "Ticket",
     "TicketAttachment",

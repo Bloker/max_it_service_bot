@@ -56,6 +56,27 @@ class KnowledgeSessionsTests(unittest.TestCase):
         self.assertEqual(session.step, "waiting_body")
         self.assertEqual(session.title, "Нет интернета")
 
+    def test_article_create_session_supports_ticket_note_mode(self) -> None:
+        service = KnowledgeArticleCreateSessionService()
+
+        session = service.start(
+            actor_user_id=10,
+            chat_id=-100,
+            hotel_id=1,
+            scope_id=2,
+            scope_code="jamaica",
+            scope_title="Джамайка",
+            category_id=3,
+            category_code="tv",
+            category_title="ТВ",
+            ticket_id="T-00104",
+            source_kind="ticket_note",
+        )
+
+        self.assertEqual(session.step, "waiting_title")
+        self.assertEqual(session.ticket_id, "T-00104")
+        self.assertEqual(session.source_kind, "ticket_note")
+
 
 if __name__ == "__main__":
     unittest.main()

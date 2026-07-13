@@ -43,6 +43,10 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_registration_keyboard,
     build_ticket_actions_keyboard,
 )
+from app.helpdesk.models.media_attachment import (
+    MEDIA_OWNER_KNOWLEDGE_ARTICLE,
+    MEDIA_OWNER_TICKET_COMMENT,
+)
 from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.models.ticket import TicketStatus
 from app.helpdesk.runtime import (
@@ -50,6 +54,8 @@ from app.helpdesk.runtime import (
     get_close_reply_session_service,
     get_knowledge_article_create_session_service,
     get_knowledge_base_service,
+    get_media_attachment_service,
+    get_media_collection_session_service,
     get_ticket_internal_comment_session_service,
     get_ticket_internal_comment_service,
     get_room_ticket_context_service,
@@ -139,6 +145,14 @@ def _extract_message_id(sent_message) -> str | None:
     """Достаёт MAX message_id из ответа отправки сообщения."""
 
     body = getattr(getattr(sent_message, "message", None), "body", None)
+    mid = getattr(body, "mid", None)
+    return str(mid) if mid else None
+
+
+def _extract_incoming_message_id(event: MessageCreated) -> str | None:
+    """Достаёт message_id входящего сообщения без побочных эффектов."""
+
+    body = getattr(event.message, "body", None)
     mid = getattr(body, "mid", None)
     return str(mid) if mid else None
 
@@ -299,6 +313,8 @@ def register(dp) -> None:
     internal_comments = get_ticket_internal_comment_service()
     knowledge_article_sessions = get_knowledge_article_create_session_service()
     knowledge_base = get_knowledge_base_service()
+    media_attachments = get_media_attachment_service()
+    media_collection_sessions = get_media_collection_session_service()
     ticket_clarifications = get_ticket_clarification_service()
     user_reply_sessions = get_user_reply_session_service()
     room_ticket_contexts = get_room_ticket_context_service()
@@ -419,6 +435,7 @@ def register(dp) -> None:
 
         session = knowledge_article_sessions.get(sender_id)
         prompt_message_id = session.prompt_message_id if session else None
+        chat_id = session.chat_id if session else None
         if prompt_message_id:
             updated = await max_messages.edit_message(
                 bot=bot,
@@ -431,13 +448,496 @@ def register(dp) -> None:
                 return
         sent_mid = await max_messages.send_message(
             bot=bot,
-            user_id=sender_id,
+            chat_id=chat_id,
+            user_id=None if chat_id is not None else sender_id,
             text=text,
             attachments=[keyboard],
             text_format=ParseMode.HTML,
         )
         if sent_mid:
             knowledge_article_sessions.set_prompt_message_id(sender_id, sent_mid)
+
+    def _schedule_media_collection_finalize(actor_id: int) -> None:
+        """Запускает или перезапускает task финализации 15-секундного окна."""
+
+        session = media_collection_sessions.get(actor_id)
+        if session is None:
+            return
+
+        async def _runner(expected_session_id: str) -> None:
+            while True:
+                current = media_collection_sessions.get(actor_id)
+                if current is None or current.session_id != expected_session_id:
+                    return
+                delay = (current.deadline_at - datetime.now(current.deadline_at.tzinfo)).total_seconds()
+                if delay > 0:
+                    try:
+                        await asyncio.sleep(delay)
+                    except asyncio.CancelledError:
+                        return
+                popped = media_collection_sessions.pop_if_due(actor_id, expected_session_id)
+                if popped is None:
+                    continue
+                await _finalize_media_collection(popped)
+                return
+
+        task = asyncio.create_task(_runner(session.session_id))
+        media_collection_sessions.set_finalize_task(actor_id, task)
+
+    async def _finalize_media_collection(session) -> None:
+        """Сохраняет агрегированный комментарий или KB-заметку после окна тишины."""
+
+        if session.state == "collecting_ticket_comment":
+            await _finalize_internal_comment_collection(session)
+            return
+        if session.state == "collecting_knowledge_article":
+            await _finalize_knowledge_article_collection(session)
+            return
+        if session.state == "collecting_close_reply":
+            await _finalize_close_reply_collection(session)
+            return
+
+    async def _finalize_internal_comment_collection(session) -> None:
+        """Финализирует внутренний комментарий и его media-вложения."""
+
+        ticket = await tickets.get_ticket(session.ticket_key or "")
+        if ticket is None:
+            return
+        room_context = (
+            room_ticket_contexts.get_context(ticket.ticket_id)
+            if room_ticket_contexts is not None
+            else None
+        )
+        body = session.body_text or "Без текста"
+        current_admin_ids, _, _ = _resolve_role_sets(cfg, access_registry)
+        actor_role = (
+            "admin"
+            if is_admin(session.actor_user_id, current_admin_ids)
+            else "IT specialist"
+        )
+        try:
+            comment = internal_comments.save(
+                ticket=ticket,
+                actor_user_id=session.actor_user_id,
+                actor_name=session.title or "Специалист",
+                text=body,
+                room_context=room_context,
+                actor_role=actor_role,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to save internal comment collection: ticket_id=%s actor_id=%s",
+                ticket.ticket_id,
+                session.actor_user_id,
+            )
+            return
+
+        if comment.comment_id is not None and session.pending_media:
+            try:
+                media_attachments.save_many(
+                    owner_type=MEDIA_OWNER_TICKET_COMMENT,
+                    owner_id=comment.comment_id,
+                    ticket_key=ticket.ticket_id,
+                    hotel_id=room_context.hotel_id if room_context else None,
+                    location_id=room_context.location_id if room_context else None,
+                    attachments=session.pending_media,
+                    created_by=session.actor_user_id,
+                    metadata={"source": "ticket_internal_comment"},
+                )
+            except Exception:
+                # Комментарий уже сохранён: ошибка вложения не должна оставлять
+                # в группе его временные сообщения и не должна ломать карточку.
+                logger.exception(
+                    "Failed to save internal comment media attachments: ticket_id=%s actor_id=%s comment_id=%s",
+                    ticket.ticket_id,
+                    session.actor_user_id,
+                    comment.comment_id,
+                )
+        await ticket_card_updates.update_group_ticket_card(
+            bot=dp.bot,
+            ticket=ticket,
+            notify=False,
+        )
+        await _cleanup_internal_comment_messages(
+            bot=dp.bot,
+            ticket_id=ticket.ticket_id,
+            specialist_user_id=session.actor_user_id,
+            prompt_message_id=session.prompt_message_id,
+            specialist_message_id=None,
+            transient_message_ids=session.transient_message_ids,
+        )
+
+    async def _finalize_knowledge_article_collection(session) -> None:
+        """Финализирует KB-заметку и её media-вложения."""
+
+        article = None
+        category_screen = None
+        saved_attachment_count = 0
+        attachment_save_failed = False
+        if session.source_kind == "ticket_note":
+            ticket = await tickets.get_ticket(session.ticket_key or "")
+            if ticket is None:
+                return
+            room_context = (
+                room_ticket_contexts.get_context(ticket.ticket_id)
+                if room_ticket_contexts is not None
+                else None
+            )
+            current_admin_ids, _, _ = _resolve_role_sets(cfg, access_registry)
+            actor_role = (
+                "admin"
+                if is_admin(session.actor_user_id, current_admin_ids)
+                else "IT specialist"
+            )
+            try:
+                _, article = knowledge_base.save_ticket_note(
+                    ticket=ticket,
+                    actor_user_id=session.actor_user_id,
+                    actor_name=session.title or "Специалист",
+                    title=session.title or "Заметка",
+                    text=session.body_text or "Без текста",
+                    room_context=room_context,
+                    actor_role=actor_role,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to finalize ticket note collection: ticket_id=%s actor_id=%s",
+                    ticket.ticket_id,
+                    session.actor_user_id,
+                )
+                await max_messages.send_message(
+                    bot=dp.bot,
+                    chat_id=session.chat_id,
+                    text="Не удалось сохранить заметку в базу знаний. Попробуйте ещё раз.",
+                    text_format=None,
+                )
+                return
+            logger.info(
+                "Ticket note knowledge article saved: ticket_id=%s actor_id=%s article_id=%s pending_media=%s",
+                ticket.ticket_id,
+                session.actor_user_id,
+                article.id,
+                len(session.pending_media),
+            )
+            if article is not None and session.pending_media:
+                try:
+                    saved_items = media_attachments.save_many(
+                        owner_type=MEDIA_OWNER_KNOWLEDGE_ARTICLE,
+                        owner_id=article.id,
+                        ticket_key=ticket.ticket_id,
+                        hotel_id=room_context.hotel_id if room_context else None,
+                        location_id=room_context.location_id if room_context else None,
+                        attachments=session.pending_media,
+                        created_by=session.actor_user_id,
+                        metadata={"source": "ticket_note"},
+                    )
+                    saved_attachment_count = len(saved_items)
+                except Exception:
+                    attachment_save_failed = True
+                    logger.exception(
+                        "Failed to save ticket note media attachments: ticket_id=%s actor_id=%s article_id=%s",
+                        ticket.ticket_id,
+                        session.actor_user_id,
+                        article.id,
+                    )
+            await ticket_card_updates.update_group_ticket_card(
+                bot=dp.bot,
+                ticket=ticket,
+                notify=False,
+            )
+            save_text = (
+                f"{knowledge_base_texts.COMMENT_SAVE_NOTIFICATION}\n"
+                f"<b>{escape(article.title if article else (session.title or 'Заметка'))}</b>\n\n"
+                f"Вложения: {saved_attachment_count}."
+            )
+            if attachment_save_failed:
+                save_text += "\n\nЧасть вложений сохранить не удалось."
+            await max_messages.send_message(
+                bot=dp.bot,
+                chat_id=session.chat_id,
+                text=save_text,
+                text_format=ParseMode.HTML,
+            )
+        else:
+            try:
+                article = knowledge_base.create_manual_article(
+                    scope_id=session.scope_id,
+                    hotel_id=session.hotel_id,
+                    category_id=session.category_id,
+                    title=session.title or "Заметка",
+                    body=session.body_text or "Без текста",
+                    author_user_id=session.actor_user_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to finalize manual KB collection: actor_id=%s scope_id=%s category_id=%s",
+                    session.actor_user_id,
+                    session.scope_id,
+                    session.category_id,
+                )
+                return
+            if session.pending_media:
+                try:
+                    saved_items = media_attachments.save_many(
+                        owner_type=MEDIA_OWNER_KNOWLEDGE_ARTICLE,
+                        owner_id=article.id,
+                        ticket_key=None,
+                        hotel_id=session.hotel_id,
+                        location_id=session.location_id,
+                        attachments=session.pending_media,
+                        created_by=session.actor_user_id,
+                        metadata={"source": "manual_knowledge_article"},
+                    )
+                    saved_attachment_count = len(saved_items)
+                except Exception:
+                    attachment_save_failed = True
+                    logger.exception(
+                        "Failed to save manual KB media attachments: actor_id=%s article_id=%s scope_id=%s category_id=%s",
+                        session.actor_user_id,
+                        article.id,
+                        session.scope_id,
+                        session.category_id,
+                    )
+            await max_messages.send_message(
+                bot=dp.bot,
+                user_id=session.actor_user_id,
+                text=knowledge_base_texts.render_manual_article_saved_with_attachments(
+                    session.scope_title or "Раздел",
+                    session.category_title or "Без категории",
+                    article.title,
+                    saved_attachment_count,
+                ),
+                text_format=ParseMode.HTML,
+            )
+            if attachment_save_failed:
+                await max_messages.send_message(
+                    bot=dp.bot,
+                    user_id=session.actor_user_id,
+                    text="Часть вложений сохранить не удалось.",
+                    text_format=None,
+                )
+            if session.scope_id and session.category_id:
+                category_screen = _kb_category_screen(session.scope_id, session.category_id)
+        if session.prompt_message_id:
+            try:
+                await max_messages.delete_message(bot=dp.bot, message_id=session.prompt_message_id)
+            except Exception:
+                logger.exception(
+                    "Failed to delete KB media collection prompt: actor_id=%s prompt_message_id=%s",
+                    session.actor_user_id,
+                    session.prompt_message_id,
+                )
+        if category_screen is not None:
+            category_text, category_keyboard = category_screen
+            await max_messages.send_message(
+                bot=dp.bot,
+                user_id=session.actor_user_id,
+                text=category_text,
+                attachments=[category_keyboard],
+                text_format=ParseMode.HTML,
+            )
+
+    async def _start_internal_comment_collection(
+        event: MessageCreated,
+        *,
+        actor_id: int,
+        actor_name: str,
+        text: str,
+        attachments: list[Any],
+    ) -> bool:
+        """Запускает или продолжает 15-секундный сбор внутреннего комментария."""
+
+        session = internal_comment_sessions.get(actor_id)
+        if session is None:
+            return False
+        if is_command_text(text):
+            return False
+        collected = media_attachments.collect_supported(0, attachments)
+        incoming_message_id = _extract_incoming_message_id(event)
+        if not text.strip() and not collected.accepted:
+            await event.message.answer("Отправьте текст, фото, видео или файл.")
+            return True
+        media_session = media_collection_sessions.start(
+            actor_user_id=actor_id,
+            chat_id=group_chat_id,
+            state="collecting_ticket_comment",
+            ticket_key=session.ticket_id,
+            hotel_id=session.hotel_id,
+            category_id=session.category_id,
+            category_title=session.category_title,
+            location_id=session.location_id,
+            location_display=session.location_display,
+            title=actor_name,
+            prompt_message_id=session.prompt_message_id,
+            source_kind="internal_comment",
+            transient_message_ids=[incoming_message_id] if incoming_message_id else None,
+        )
+        media_collection_sessions.append(
+            actor_id,
+            text=text,
+            media=collected.accepted,
+            warnings=collected.rejected_messages,
+            transient_message_ids=[incoming_message_id] if incoming_message_id else None,
+        )
+        internal_comment_sessions.finish(actor_id)
+        _schedule_media_collection_finalize(actor_id)
+        for warning in collected.rejected_messages:
+            await event.message.answer(warning)
+        return True
+
+    async def _save_ticket_note(
+        event: MessageCreated,
+        *,
+        actor_id: int,
+        actor_name: str,
+        text: str,
+        attachments: list[Any],
+    ) -> bool:
+        """Сохраняет KB-заметку специалиста по заявке из групповой карточки."""
+
+        session = knowledge_article_sessions.get(actor_id)
+        if session is None or session.source_kind != "ticket_note":
+            return False
+
+        if is_command_text(text):
+            return False
+
+        if session.step == "waiting_title":
+            if not text:
+                await _update_kb_session_prompt(
+                    bot=event._ensure_bot(),
+                    sender_id=actor_id,
+                    text="Введите тему заметки текстом.",
+                    keyboard=build_knowledge_cancel_keyboard(),
+                )
+                return True
+            title = text.strip()
+            if len(title) > 120:
+                await _update_kb_session_prompt(
+                    bot=event._ensure_bot(),
+                    sender_id=actor_id,
+                    text="Тема должна быть не длиннее 120 символов.",
+                    keyboard=build_knowledge_cancel_keyboard(),
+                )
+                return True
+            knowledge_article_sessions.set_title(actor_id, title)
+
+            # MAX передаёт подпись к фото или видео как текст сообщения. Если
+            # специалист ввёл тему вместе с вложениями, не теряем их на шаге
+            # ввода темы: сразу открываем общее 15-секундное окно сбора.
+            collected = media_attachments.collect_supported(0, attachments)
+            if collected.accepted:
+                media_collection_sessions.start(
+                    actor_user_id=actor_id,
+                    chat_id=session.chat_id or group_chat_id,
+                    state="collecting_knowledge_article",
+                    ticket_key=session.ticket_id,
+                    scope_id=session.scope_id,
+                    scope_title=session.scope_title,
+                    hotel_id=session.hotel_id,
+                    category_id=session.category_id,
+                    category_title=session.category_title,
+                    title=title,
+                    prompt_message_id=session.prompt_message_id,
+                    source_kind=session.source_kind,
+                )
+                media_collection_sessions.append(
+                    actor_id,
+                    media=collected.accepted,
+                    warnings=collected.rejected_messages,
+                )
+                knowledge_article_sessions.finish(actor_id)
+                await max_messages.edit_message(
+                    bot=event._ensure_bot(),
+                    message_id=session.prompt_message_id,
+                    text=knowledge_base_texts.render_media_collection_prompt(title=title),
+                    attachments=[build_knowledge_cancel_keyboard()],
+                    text_format=ParseMode.HTML,
+                )
+                logger.info(
+                    "Ticket note media collection started from title: ticket_id=%s actor_id=%s title=%r attachments=%s",
+                    session.ticket_id,
+                    actor_id,
+                    title,
+                    len(collected.accepted),
+                )
+                _schedule_media_collection_finalize(actor_id)
+                for warning in collected.rejected_messages:
+                    await event.message.answer(warning)
+                return True
+
+            await _update_kb_session_prompt(
+                bot=event._ensure_bot(),
+                sender_id=actor_id,
+                text=knowledge_base_texts.render_comment_body_prompt(
+                    ticket_id=session.ticket_id or "заявка",
+                    title=title,
+                ),
+                keyboard=build_knowledge_cancel_keyboard(),
+            )
+            return True
+
+        if session.step != "waiting_body":
+            return False
+
+        collected = media_attachments.collect_supported(0, attachments)
+        if not text and not collected.accepted:
+            await _update_kb_session_prompt(
+                bot=event._ensure_bot(),
+                sender_id=actor_id,
+                text="Отправьте текст, фото, видео или файл.",
+                keyboard=build_knowledge_cancel_keyboard(),
+            )
+            return True
+        body = text.strip()
+        if len(body) > 4000:
+            await _update_kb_session_prompt(
+                bot=event._ensure_bot(),
+                sender_id=actor_id,
+                text="Текст заметки должен быть не длиннее 4000 символов.",
+                keyboard=build_knowledge_cancel_keyboard(),
+            )
+            return True
+
+        media_collection_sessions.start(
+            actor_user_id=actor_id,
+            chat_id=session.chat_id or group_chat_id,
+            state="collecting_knowledge_article",
+            ticket_key=session.ticket_id,
+            scope_id=session.scope_id,
+            scope_title=session.scope_title,
+            hotel_id=session.hotel_id,
+            category_id=session.category_id,
+            category_title=session.category_title,
+            title=session.title,
+            prompt_message_id=session.prompt_message_id,
+            source_kind=session.source_kind,
+        )
+        media_collection_sessions.append(
+            actor_id,
+            text=body,
+            media=collected.accepted,
+            warnings=collected.rejected_messages,
+        )
+        knowledge_article_sessions.finish(actor_id)
+        logger.info(
+            "Ticket note media collection started: ticket_id=%s actor_id=%s title=%r attachments=%s",
+            session.ticket_id,
+            actor_id,
+            session.title,
+            len(collected.accepted),
+        )
+        await max_messages.edit_message(
+            bot=event._ensure_bot(),
+            message_id=session.prompt_message_id,
+            text=knowledge_base_texts.render_media_collection_prompt(title=session.title),
+            attachments=[build_knowledge_cancel_keyboard()],
+            text_format=ParseMode.HTML,
+        )
+        _schedule_media_collection_finalize(actor_id)
+        for warning in collected.rejected_messages:
+            await event.message.answer(warning)
+        return True
 
     async def _send_delayed_submit(user_id: int, bot) -> None:
         """Автоматически отправляет черновик после паузы в сообщениях."""
@@ -890,33 +1390,118 @@ def register(dp) -> None:
         specialist_user_id: int,
         prompt_message_id: str | None,
         specialist_message_id: str | None,
+        transient_message_ids: list[str] | None = None,
     ) -> None:
         """Удаляет временные сообщения сценария закрытия с ответом."""
 
-        prompt_deleted = await max_messages.delete_message(
-            bot=bot,
-            message_id=prompt_message_id,
+        message_ids = [message_id for message_id in (prompt_message_id, specialist_message_id) if message_id]
+        for message_id in transient_message_ids or []:
+            if message_id and message_id not in message_ids:
+                message_ids.append(message_id)
+        for message_id in message_ids:
+            deleted = await max_messages.delete_message(bot=bot, message_id=message_id)
+            if not deleted:
+                logger.warning(
+                    "Failed to delete close-reply transient message: ticket_id=%s specialist_user_id=%s message_id=%s",
+                    ticket_id,
+                    specialist_user_id,
+                    message_id,
+                )
+
+    async def _finalize_close_reply_collection(session) -> None:
+        """Доставляет пользователю собранный ответ, затем закрывает заявку."""
+
+        ticket = await tickets.get_ticket(session.ticket_key or "")
+        if ticket is None:
+            return
+        admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
+        if not can_change_ticket_status(
+            actor_user_id=session.actor_user_id,
+            ticket=ticket,
+            admin_ids=admin_ids,
+            specialist_ids=specialist_ids,
+        ) or ticket.status == TicketStatus.CLOSED:
+            return
+
+        reply_text = session.body_text or "Смотрите вложения."
+        user_message_text = user_texts.render_ticket_closed_with_reply_notification(
+            ticket,
+            reply_text,
         )
-        specialist_deleted = await max_messages.delete_message(
-            bot=bot,
-            message_id=specialist_message_id,
+        user_sent_mid = await max_messages.send_message(
+            bot=dp.bot,
+            user_id=ticket.user_id,
+            text=user_message_text,
+            attachments=[*session.pending_media, build_close_notification_menu_keyboard()],
+            text_format=None,
         )
-        if not prompt_deleted:
+        if not user_sent_mid:
             logger.warning(
-                "Failed to delete close-reply prompt: ticket_id=%s "
-                "specialist_user_id=%s prompt_message_id=%s",
-                ticket_id,
-                specialist_user_id,
-                prompt_message_id,
+                "Close-with-reply collection delivery failed, ticket not closed: ticket_id=%s actor_id=%s",
+                ticket.ticket_id,
+                session.actor_user_id,
             )
-        if not specialist_deleted:
-            logger.warning(
-                "Failed to delete close-reply specialist message: ticket_id=%s "
-                "specialist_user_id=%s specialist_message_id=%s",
-                ticket_id,
-                specialist_user_id,
-                specialist_message_id,
+            await max_messages.send_message(
+                bot=dp.bot,
+                chat_id=session.chat_id,
+                text="Не удалось отправить сообщение пользователю. Заявка не закрыта.",
+                text_format=None,
             )
+            return
+
+        ticket_links.bind_user_message(ticket_id=ticket.ticket_id, user_message_id=user_sent_mid)
+        actor_role = "admin" if is_admin(session.actor_user_id, admin_ids) else "IT specialist"
+        ticket_clarifications.save_closing_reply(
+            ticket_id=ticket.ticket_id,
+            actor_user_id=session.actor_user_id,
+            actor_name=session.title or "Специалист",
+            text=reply_text,
+            attachments=session.pending_media,
+            source_message_id=session.transient_message_ids[0] if session.transient_message_ids else None,
+            target_message_id=user_sent_mid,
+            actor_role=actor_role,
+        )
+        await observability.ticket_event(
+            ticket_id=ticket.ticket_id,
+            event_type="ticket_close_reply_sent_to_user",
+            actor_user_id=session.actor_user_id,
+            actor_name=session.title or "Специалист",
+            actor_role=actor_role,
+            source="group_media_collection",
+            related_message_id=user_sent_mid,
+            metadata={"attachments_count": len(session.pending_media)},
+        )
+        result = await tickets.close_ticket(
+            ticket_id=ticket.ticket_id,
+            actor_user_id=session.actor_user_id,
+            actor_name=session.title or "Специалист",
+            admin_ids=admin_ids,
+        )
+        if not result.ok or result.ticket is None:
+            await max_messages.send_message(
+                bot=dp.bot,
+                chat_id=session.chat_id,
+                text="Ответ пользователю отправлен, но заявку не удалось закрыть.",
+                text_format=None,
+            )
+            return
+
+        await ticket_card_updates.update_group_ticket_card(bot=dp.bot, ticket=result.ticket, notify=False)
+        await _cleanup_close_reply_messages(
+            bot=dp.bot,
+            ticket_id=result.ticket.ticket_id,
+            specialist_user_id=session.actor_user_id,
+            prompt_message_id=session.prompt_message_id,
+            specialist_message_id=None,
+            transient_message_ids=session.transient_message_ids,
+        )
+        logger.info(
+            "Ticket closed with collected reply: ticket_id=%s actor_id=%s user_message_id=%s attachments=%s",
+            result.ticket.ticket_id,
+            session.actor_user_id,
+            user_sent_mid,
+            len(session.pending_media),
+        )
 
     async def _cleanup_internal_comment_messages(
         *,
@@ -925,33 +1510,38 @@ def register(dp) -> None:
         specialist_user_id: int,
         prompt_message_id: str | None,
         specialist_message_id: str | None,
+        transient_message_ids: list[str] | None = None,
     ) -> None:
         """Удаляет временные сообщения сценария внутреннего комментария."""
 
-        prompt_deleted = await max_messages.delete_message(
-            bot=bot,
-            message_id=prompt_message_id,
-        )
-        specialist_deleted = await max_messages.delete_message(
-            bot=bot,
-            message_id=specialist_message_id,
-        )
-        if not prompt_deleted:
-            logger.warning(
-                "Internal comment prompt delete failed: ticket_id=%s "
-                "specialist_user_id=%s prompt_message_id=%s",
-                ticket_id,
-                specialist_user_id,
-                prompt_message_id,
+        message_ids: list[str] = []
+        if prompt_message_id:
+            message_ids.append(prompt_message_id)
+        if specialist_message_id:
+            message_ids.append(specialist_message_id)
+        for message_id in transient_message_ids or []:
+            if message_id and message_id not in message_ids:
+                message_ids.append(message_id)
+
+        for message_id in message_ids:
+            deleted = await max_messages.delete_message(
+                bot=bot,
+                message_id=message_id,
             )
-        if not specialist_deleted:
-            logger.warning(
-                "Internal comment message delete failed: ticket_id=%s "
-                "specialist_user_id=%s specialist_message_id=%s",
-                ticket_id,
-                specialist_user_id,
-                specialist_message_id,
-            )
+            if not deleted:
+                logger.warning(
+                    "Internal comment cleanup delete failed: ticket_id=%s specialist_user_id=%s message_id=%s",
+                    ticket_id,
+                    specialist_user_id,
+                    message_id,
+                )
+            else:
+                logger.info(
+                    "Internal comment transient message deleted: ticket_id=%s specialist_user_id=%s message_id=%s",
+                    ticket_id,
+                    specialist_user_id,
+                    message_id,
+                )
 
     async def _send_close_reply_to_user(
         event: MessageCreated,
@@ -961,7 +1551,7 @@ def register(dp) -> None:
         text: str,
         attachments: list[Any],
     ) -> bool:
-        """Обрабатывает текст специалиста для закрытия заявки с ответом."""
+        """Запускает сбор ответа и вложений для закрытия заявки."""
 
         session = close_reply_sessions.get(actor_id)
         if session is None:
@@ -993,18 +1583,6 @@ def register(dp) -> None:
         if is_command_text(text):
             return False
 
-        if not text:
-            await event.message.answer(
-                "Для закрытия с ответом отправьте текстовое сообщение."
-            )
-            return True
-
-        if attachments:
-            await event.message.answer(
-                "Для закрытия с ответом отправьте текстовое сообщение без вложений."
-            )
-            return True
-
         ticket = await tickets.get_ticket(session.ticket_id)
         if ticket is None:
             close_reply_sessions.reset(actor_id)
@@ -1027,100 +1605,49 @@ def register(dp) -> None:
             await event.message.answer(specialist_texts.ALREADY_CLOSED_TEXT)
             return True
 
-        user_message_text = user_texts.render_ticket_closed_with_reply_notification(
-            ticket,
-            text,
+        collected = media_attachments.collect_supported(0, attachments)
+        if not text.strip() and not collected.accepted:
+            await event.message.answer("Отправьте текст, фото, видео или файл.")
+            return True
+
+        incoming_message_id = _extract_incoming_message_id(event)
+        media_collection_sessions.start(
+            actor_user_id=actor_id,
+            chat_id=session.group_chat_id or group_chat_id,
+            state="collecting_close_reply",
+            ticket_key=ticket.ticket_id,
+            title=actor_name,
+            prompt_message_id=session.prompt_message_id,
+            source_kind="close_reply",
+            transient_message_ids=[incoming_message_id] if incoming_message_id else None,
         )
-        user_sent_mid = await max_messages.send_message(
+        media_collection_sessions.append(
+            actor_id,
+            text=text,
+            media=collected.accepted,
+            warnings=collected.rejected_messages,
+            transient_message_ids=[incoming_message_id] if incoming_message_id else None,
+        )
+        close_reply_sessions.finish(actor_id)
+        await max_messages.edit_message(
             bot=bot,
-            user_id=ticket.user_id,
-            text=user_message_text,
-            attachments=[build_close_notification_menu_keyboard()],
+            message_id=session.prompt_message_id,
+            text=(
+                "Можно приложить фото, видео или файл.\n"
+                "Всё, что придёт в течение 15 секунд после последнего сообщения, "
+                "будет отправлено пользователю вместе с ответом."
+            ),
+            attachments=[build_close_reply_cancel_keyboard(ticket.ticket_id)],
             text_format=None,
         )
-        if not user_sent_mid:
-            logger.warning(
-                "Close-with-reply delivery failed, ticket not closed: "
-                "ticket_id=%s actor_id=%s user_id=%s",
-                ticket.ticket_id,
-                actor_id,
-                ticket.user_id,
-            )
-            await event.message.answer(
-                "Не удалось отправить сообщение пользователю. Заявка не закрыта."
-            )
-            return True
-
-        ticket_links.bind_user_message(
-            ticket_id=ticket.ticket_id,
-            user_message_id=user_sent_mid,
-        )
-        actor_role = "admin" if is_admin(actor_id, admin_ids) else "IT specialist"
-        ticket_clarifications.save_closing_reply(
-            ticket_id=ticket.ticket_id,
-            actor_user_id=actor_id,
-            actor_name=actor_name,
-            text=text,
-            source_message_id=specialist_message_id,
-            target_message_id=user_sent_mid,
-            actor_role=actor_role,
-        )
-        await observability.ticket_event(
-            ticket_id=ticket.ticket_id,
-            event_type="ticket_close_reply_sent_to_user",
-            actor_user_id=actor_id,
-            actor_name=actor_name,
-            actor_role=actor_role,
-            source="user_message",
-            related_message_id=user_sent_mid,
-        )
-        await observability.ticket_event(
-            ticket_id=ticket.ticket_id,
-            event_type="message_relayed_to_user",
-            actor_user_id=actor_id,
-            actor_name=actor_name,
-            actor_role=actor_role,
-            source="user_message",
-            related_message_id=user_sent_mid,
-            metadata={"message_kind": "closing_reply"},
-        )
-
-        result = await tickets.close_ticket(
-            ticket_id=ticket.ticket_id,
-            actor_user_id=actor_id,
-            actor_name=actor_name,
-            admin_ids=admin_ids,
-        )
-        if not result.ok or result.ticket is None:
-            close_reply_sessions.finish(actor_id)
-            await event.message.answer(
-                "Ответ пользователю отправлен, но заявку не удалось закрыть."
-            )
-            logger.warning(
-                "Close-with-reply close failed after delivery: ticket_id=%s reason=%s",
-                ticket.ticket_id,
-                result.reason,
-            )
-            return True
-
-        close_reply_sessions.finish(actor_id)
-        await ticket_card_updates.update_group_ticket_card(
-            bot=bot,
-            ticket=result.ticket,
-            notify=False,
-        )
-        await _cleanup_close_reply_messages(
-            bot=bot,
-            ticket_id=result.ticket.ticket_id,
-            specialist_user_id=actor_id,
-            prompt_message_id=session.prompt_message_id,
-            specialist_message_id=specialist_message_id,
-        )
+        _schedule_media_collection_finalize(actor_id)
+        for warning in collected.rejected_messages:
+            await event.message.answer(warning)
         logger.info(
-            "Ticket closed with reply: ticket_id=%s actor_id=%s user_message_id=%s",
-            result.ticket.ticket_id,
+            "Close-with-reply media collection started: ticket_id=%s actor_id=%s attachments=%s",
+            ticket.ticket_id,
             actor_id,
-            user_sent_mid,
+            len(collected.accepted),
         )
         return True
 
@@ -1326,7 +1853,7 @@ def register(dp) -> None:
         text: str,
         attachments: list[Any],
     ) -> bool:
-        """Сохраняет внутренний комментарий специалиста по заявке."""
+        """Переключает ввод внутреннего комментария в 15-секундный режим сбора."""
 
         session = internal_comment_sessions.get(actor_id)
         if session is None:
@@ -1350,14 +1877,6 @@ def register(dp) -> None:
         if is_command_text(text):
             return False
 
-        if attachments:
-            await event.message.answer("Внутренний комментарий принимается только текстом.")
-            return True
-
-        if not text:
-            await event.message.answer("Введите текст внутреннего комментария.")
-            return True
-
         ticket = await tickets.get_ticket(session.ticket_id)
         if ticket is None:
             internal_comment_sessions.cancel(actor_id)
@@ -1379,54 +1898,46 @@ def register(dp) -> None:
             await event.message.answer("Комментарий должен быть не длиннее 4000 символов.")
             return True
 
-        room_context = (
-            room_ticket_contexts.get_context(ticket.ticket_id)
-            if room_ticket_contexts is not None
-            else None
-        )
-        actor_role = "admin" if is_admin(actor_id, admin_ids) else "IT specialist"
-        try:
-            internal_comments.save(
-                ticket=ticket,
-                actor_user_id=actor_id,
-                actor_name=actor_name,
-                text=text,
-                room_context=room_context,
-                source_message_id=specialist_message_id,
-                actor_role=actor_role,
-            )
-        except Exception:
-            logger.exception(
-                "Failed to save internal comment: ticket_id=%s actor_id=%s",
-                ticket.ticket_id,
-                actor_id,
-            )
-            await event.message.answer("Не удалось сохранить комментарий. Попробуйте ещё раз.")
-            return True
-        await observability.ticket_event(
-            ticket_id=ticket.ticket_id,
-            event_type="ticket_internal_comment_saved",
-            actor_user_id=actor_id,
+        return await _start_internal_comment_collection(
+            event,
+            actor_id=actor_id,
             actor_name=actor_name,
-            actor_role=actor_role,
-            source="group_message",
-            related_message_id=specialist_message_id,
-            metadata={"visible_to_user": False, "added_to_knowledge_base": False},
+            text=text,
+            attachments=attachments,
         )
-        internal_comment_sessions.finish(actor_id)
-        await ticket_card_updates.update_group_ticket_card(
-            bot=bot,
-            ticket=ticket,
-            notify=False,
+
+    async def _collect_active_media_session(
+        event: MessageCreated,
+        *,
+        actor_id: int,
+        text: str,
+        attachments: list[Any],
+    ) -> bool:
+        """Добавляет сообщение в активное 15-секундное окно сбора."""
+
+        session = media_collection_sessions.get(actor_id)
+        if session is None:
+            return False
+        current_chat_id = int(event.message.recipient.chat_id)
+        if session.chat_id != current_chat_id:
+            return False
+        if is_command_text(text):
+            return False
+        existing_count = len(session.pending_media)
+        collected = media_attachments.collect_supported(existing_count, attachments)
+        if not text.strip() and not collected.accepted and not collected.rejected_messages:
+            return True
+        incoming_message_id = _extract_incoming_message_id(event)
+        media_collection_sessions.append(
+            actor_id,
+            text=text,
+            media=collected.accepted,
+            warnings=collected.rejected_messages,
+            transient_message_ids=[incoming_message_id] if incoming_message_id else None,
         )
-        await _cleanup_internal_comment_messages(
-            bot=bot,
-            ticket_id=ticket.ticket_id,
-            specialist_user_id=actor_id,
-            prompt_message_id=session.prompt_message_id,
-            specialist_message_id=specialist_message_id,
-        )
-        await event.message.answer("Комментарий сохранён.\n\nПользователю он не отправлен.")
+        _schedule_media_collection_finalize(actor_id)
+        for warning in collected.rejected_messages:
+            await event.message.answer(warning)
         return True
 
     async def _relay_user_reply_to_group(
@@ -1823,6 +2334,15 @@ def register(dp) -> None:
             actor_id, actor_name = get_sender_identity(actor, fallback_name="Специалист")
             admin_ids, specialist_ids, _ = _resolve_role_sets(cfg, access_registry)
 
+            media_collected = await _collect_active_media_session(
+                event,
+                actor_id=actor_id,
+                text=text,
+                attachments=message_attachments,
+            )
+            if media_collected:
+                return
+
             close_reply_sent = await _send_close_reply_to_user(
                 event,
                 actor_id=actor_id,
@@ -1849,9 +2369,19 @@ def register(dp) -> None:
                 actor_id=actor_id,
                 actor_name=actor_name,
                 text=text,
-                attachments=relay_message_attachments,
+                attachments=message_attachments,
             )
             if internal_comment_saved:
+                return
+
+            ticket_note_saved = await _save_ticket_note(
+                event,
+                actor_id=actor_id,
+                actor_name=actor_name,
+                text=text,
+                attachments=message_attachments,
+            )
+            if ticket_note_saved:
                 return
 
             if not text.startswith("/"):
@@ -2156,6 +2686,15 @@ def register(dp) -> None:
             )
             return
 
+        media_collected = await _collect_active_media_session(
+            event,
+            actor_id=sender_id,
+            text=text,
+            attachments=message_attachments,
+        )
+        if media_collected:
+            return
+
         kb_session = knowledge_article_sessions.get(sender_id)
         if kb_session is not None:
             if text == "/cancel":
@@ -2169,13 +2708,14 @@ def register(dp) -> None:
                 )
                 return
             if message_attachments or audio_source_message:
-                await _update_kb_session_prompt(
-                    bot=event._ensure_bot(),
-                    sender_id=sender_id,
-                    text="На этом шаге принимается только текст.\n\n[Отмена]",
-                    keyboard=build_knowledge_cancel_keyboard(),
-                )
-                return
+                if kb_session.step != "waiting_body":
+                    await _update_kb_session_prompt(
+                        bot=event._ensure_bot(),
+                        sender_id=sender_id,
+                        text="На этом шаге принимается только текст.\n\n[Отмена]",
+                        keyboard=build_knowledge_cancel_keyboard(),
+                    )
+                    return
             if kb_session.step == "waiting_title":
                 if not text:
                     await _update_kb_session_prompt(
@@ -2207,11 +2747,12 @@ def register(dp) -> None:
                 )
                 return
             if kb_session.step == "waiting_body":
-                if not text:
+                collected = media_attachments.collect_supported(0, message_attachments)
+                if not text and not collected.accepted:
                     await _update_kb_session_prompt(
                         bot=event._ensure_bot(),
                         sender_id=sender_id,
-                        text="Введите текст записи.",
+                        text="Отправьте текст, фото, видео или файл.",
                         keyboard=build_knowledge_cancel_keyboard(),
                     )
                     return
@@ -2224,43 +2765,35 @@ def register(dp) -> None:
                         keyboard=build_knowledge_cancel_keyboard(),
                     )
                     return
-                article = knowledge_base.create_manual_article(
+                media_collection_sessions.start(
+                    actor_user_id=sender_id,
+                    chat_id=recipient_chat_id,
+                    state="collecting_knowledge_article",
                     scope_id=kb_session.scope_id,
+                    scope_title=kb_session.scope_title,
                     hotel_id=kb_session.hotel_id,
                     category_id=kb_session.category_id,
+                    category_title=kb_session.category_title,
                     title=kb_session.title,
-                    body=body,
-                    author_user_id=sender_id,
+                    prompt_message_id=kb_session.prompt_message_id,
+                    source_kind="manual",
+                )
+                media_collection_sessions.append(
+                    sender_id,
+                    text=body,
+                    media=collected.accepted,
+                    warnings=collected.rejected_messages,
+                )
+                await _update_kb_session_prompt(
+                    bot=event._ensure_bot(),
+                    sender_id=sender_id,
+                    text=knowledge_base_texts.render_media_collection_prompt(title=kb_session.title),
+                    keyboard=build_knowledge_cancel_keyboard(),
                 )
                 knowledge_article_sessions.finish(sender_id)
-                await event.message.answer(
-                    text=knowledge_base_texts.render_manual_article_saved(
-                        kb_session.scope_title or "Раздел",
-                        kb_session.category_title or "Без категории",
-                        article.title,
-                    ),
-                    format=ParseMode.HTML,
-                )
-                if kb_session.scope_id and kb_session.category_id:
-                    category_screen = _kb_category_screen(kb_session.scope_id, kb_session.category_id)
-                    if category_screen is not None:
-                        category_text, category_keyboard = category_screen
-                        await max_messages.send_message(
-                            bot=event._ensure_bot(),
-                            user_id=sender_id,
-                            text=category_text,
-                            attachments=[category_keyboard],
-                            text_format=ParseMode.HTML,
-                        )
-                        return
-                kb_root_text, kb_root_keyboard = _kb_root_screen()
-                await max_messages.send_message(
-                    bot=event._ensure_bot(),
-                    user_id=sender_id,
-                    text=kb_root_text,
-                    attachments=[kb_root_keyboard],
-                    text_format=ParseMode.HTML,
-                )
+                _schedule_media_collection_finalize(sender_id)
+                for warning in collected.rejected_messages:
+                    await event.message.answer(warning)
                 return
 
         pending_reply_sent = await _send_pending_user_reply_to_group(

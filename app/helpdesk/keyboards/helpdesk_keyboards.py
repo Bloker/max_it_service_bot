@@ -576,6 +576,7 @@ def build_ticket_actions_keyboard(
         and room_context.hotel_id
         and room_context.location_id is not None
     )
+    has_ticket_note = has_room_history
     action_rows: list[list[CallbackButton]]
     if status == TicketStatus.CLOSED:
         action_rows = []
@@ -606,13 +607,21 @@ def build_ticket_actions_keyboard(
                     payload=SpecialistTicketPayload(action="clarify", ticket_id=ticket_id).pack(),
                 )
             ],
-            [
-                CallbackButton(
-                    text="Комментарий",
-                    payload=SpecialistTicketPayload(action="comment", ticket_id=ticket_id).pack(),
-                )
-            ],
         ]
+        comment_row = [
+            CallbackButton(
+                text="Комментарий",
+                payload=SpecialistTicketPayload(action="comment", ticket_id=ticket_id).pack(),
+            )
+        ]
+        if has_ticket_note:
+            comment_row.append(
+                CallbackButton(
+                    text="Заметка",
+                    payload=SpecialistTicketPayload(action="note", ticket_id=ticket_id).pack(),
+                )
+            )
+        action_rows.append(comment_row)
     elif status == TicketStatus.WAITING_USER:
         action_rows = [
             [
@@ -634,13 +643,21 @@ def build_ticket_actions_keyboard(
                     ).pack(),
                 )
             ],
-            [
-                CallbackButton(
-                    text="Комментарий",
-                    payload=SpecialistTicketPayload(action="comment", ticket_id=ticket_id).pack(),
-                )
-            ],
         ]
+        comment_row = [
+            CallbackButton(
+                text="Комментарий",
+                payload=SpecialistTicketPayload(action="comment", ticket_id=ticket_id).pack(),
+            )
+        ]
+        if has_ticket_note:
+            comment_row.append(
+                CallbackButton(
+                    text="Заметка",
+                    payload=SpecialistTicketPayload(action="note", ticket_id=ticket_id).pack(),
+                )
+            )
+        action_rows.append(comment_row)
     else:
         action_rows = [
             [
@@ -649,13 +666,21 @@ def build_ticket_actions_keyboard(
                     payload=SpecialistTicketPayload(action="take", ticket_id=ticket_id).pack(),
                 )
             ],
-            [
-                CallbackButton(
-                    text="Комментарий",
-                    payload=SpecialistTicketPayload(action="comment", ticket_id=ticket_id).pack(),
-                )
-            ],
         ]
+        comment_row = [
+            CallbackButton(
+                text="Комментарий",
+                payload=SpecialistTicketPayload(action="comment", ticket_id=ticket_id).pack(),
+            )
+        ]
+        if has_ticket_note:
+            comment_row.append(
+                CallbackButton(
+                    text="Заметка",
+                    payload=SpecialistTicketPayload(action="note", ticket_id=ticket_id).pack(),
+                )
+            )
+        action_rows.append(comment_row)
 
     if has_room_history:
         history_button = CallbackButton(
@@ -755,11 +780,30 @@ def build_knowledge_articles_keyboard(
     return ButtonsPayload(buttons=rows).pack()
 
 
-def build_knowledge_article_view_keyboard(scope_id: int, category_id: int):
+def build_knowledge_article_view_keyboard(
+    scope_id: int,
+    category_id: int,
+    *,
+    article_id: int | None = None,
+    has_attachments: bool = False,
+):
     """Собирает клавиатуру экрана одной статьи KB."""
 
-    return ButtonsPayload(
-        buttons=[
+    rows = []
+    if has_attachments and article_id is not None:
+        rows.append(
+            [
+                CallbackButton(
+                    text="Открыть вложения",
+                    payload=UserMenuPayload(
+                        action="kb_media",
+                        value=f"{scope_id}:{category_id}:{article_id}",
+                    ).pack(),
+                )
+            ]
+        )
+    rows.extend(
+        [
             [
                 CallbackButton(
                     text="Назад к категории",
@@ -771,7 +815,8 @@ def build_knowledge_article_view_keyboard(scope_id: int, category_id: int):
             ],
             [CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())],
         ]
-    ).pack()
+    )
+    return ButtonsPayload(buttons=rows).pack()
 
 
 def build_knowledge_add_scope_keyboard(scopes: tuple[KnowledgeScope, ...]):

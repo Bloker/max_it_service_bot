@@ -11,6 +11,7 @@ from app.db.models import (
     AuditLog,
     KnowledgeArticle,
     KnowledgeScope,
+    MediaAttachment,
     NetworkToolRun,
     Ticket,
     TicketAttachment,
@@ -70,6 +71,7 @@ class SqlAlchemyFoundationTests(unittest.TestCase):
             "helpdesk.ticket_events",
             "helpdesk.ticket_comments",
             "helpdesk.ticket_attachments",
+            "helpdesk.media_attachments",
             "helpdesk.knowledge_articles",
             "helpdesk.knowledge_scopes",
             "ops.audit_log",
@@ -83,6 +85,7 @@ class SqlAlchemyFoundationTests(unittest.TestCase):
         self.assertEqual(TicketEvent.__table__.schema, "helpdesk")
         self.assertEqual(TicketComment.__table__.schema, "helpdesk")
         self.assertEqual(TicketAttachment.__table__.schema, "helpdesk")
+        self.assertEqual(MediaAttachment.__table__.schema, "helpdesk")
         self.assertEqual(KnowledgeArticle.__table__.schema, "helpdesk")
         self.assertEqual(KnowledgeScope.__table__.schema, "helpdesk")
         self.assertEqual(AuditLog.__table__.schema, "ops")
@@ -92,6 +95,7 @@ class SqlAlchemyFoundationTests(unittest.TestCase):
         self.assertIsInstance(TicketEvent.__table__.c.payload.type, JSONB)
         self.assertIsInstance(TicketComment.__table__.c.meta.type, JSONB)
         self.assertIsInstance(TicketAttachment.__table__.c.meta.type, JSONB)
+        self.assertIsInstance(MediaAttachment.__table__.c.metadata.type, JSONB)
         self.assertIsInstance(KnowledgeArticle.__table__.c.metadata.type, JSONB)
         self.assertIsInstance(KnowledgeScope.__table__.c.metadata.type, JSONB)
         self.assertIsInstance(AuditLog.__table__.c.payload.type, JSONB)

@@ -104,6 +104,30 @@ class TicketClarificationServiceTests(unittest.TestCase):
         self.assertEqual("image-token", saved_attachment.platform_attachment_ref)
         self.assertNotIn("url", saved_attachment.meta)
 
+    def test_closing_reply_persists_media_metadata(self) -> None:
+        repository = FakeTicketContextRepository()
+        service = TicketClarificationService(repository=repository)
+        attachment = AttachmentUpload(
+            type=UploadType.VIDEO,
+            payload=AttachmentPayload(token="video-token"),
+        )
+
+        service.save_closing_reply(
+            ticket_id="T-00001",
+            actor_user_id=501,
+            actor_name="Дмитрий",
+            text="Работы выполнены.",
+            attachments=[attachment],
+            source_message_id="group-reply",
+            target_message_id="user-reply",
+        )
+
+        self.assertEqual(1, len(repository.comments))
+        self.assertEqual("closing_reply", repository.comments[0].direction)
+        self.assertEqual(1, len(repository.attachments))
+        self.assertEqual("video", repository.attachments[0].platform_attachment_type)
+        self.assertEqual("closing_reply", repository.attachments[0].meta["source"])
+
     def test_restores_last_clarification_from_repository(self) -> None:
         repository = FakeTicketContextRepository()
         comment = repository.save_comment(

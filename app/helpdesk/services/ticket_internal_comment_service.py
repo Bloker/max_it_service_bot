@@ -4,12 +4,17 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 
+from app.helpdesk.models.media_attachment import (
+    MEDIA_OWNER_TICKET_COMMENT,
+    MediaAttachmentCounts,
+)
 from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.models.ticket import Ticket
 from app.helpdesk.repositories.ticket_context_repository import (
     TicketCommentRecord,
     TicketContextRepository,
 )
+from app.helpdesk.services.media_attachment_service import MediaAttachmentService
 from app.helpdesk.texts.formatters import format_room_context_object
 
 
@@ -26,7 +31,9 @@ class TicketInternalComment:
 
     ticket_id: str
     body: str
+    comment_id: int | None = None
     created_at: datetime | None = None
+    attachment_counts: MediaAttachmentCounts = MediaAttachmentCounts()
 
     @property
     def card_text(self) -> str:
@@ -41,8 +48,13 @@ class TicketInternalComment:
 class TicketInternalCommentService:
     """Работает только с внутренними записями `helpdesk.ticket_comments`."""
 
-    def __init__(self, repository: TicketContextRepository | None = None) -> None:
+    def __init__(
+        self,
+        repository: TicketContextRepository | None = None,
+        media_attachments: MediaAttachmentService | None = None,
+    ) -> None:
         self._repository = repository
+        self._media_attachments = media_attachments
 
     def save(
         self,
@@ -107,14 +119,21 @@ class TicketInternalCommentService:
             return None
         return self._from_record(record) if record is not None else None
 
-    @staticmethod
-    def _from_record(record: TicketCommentRecord) -> TicketInternalComment:
+    def _from_record(self, record: TicketCommentRecord) -> TicketInternalComment:
         """Преобразует запись репозитория в модель карточки."""
 
+        counts = MediaAttachmentCounts()
+        if self._media_attachments is not None:
+            counts = self._media_attachments.count_attachments(
+                owner_type=MEDIA_OWNER_TICKET_COMMENT,
+                owner_id=record.id,
+            )
         return TicketInternalComment(
+            comment_id=record.id,
             ticket_id=record.ticket_id,
             body=record.body,
             created_at=record.created_at,
+            attachment_counts=counts,
         )
 
     @staticmethod

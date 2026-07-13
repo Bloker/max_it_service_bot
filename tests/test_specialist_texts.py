@@ -1,11 +1,16 @@
 import unittest
 from datetime import datetime, timezone
 
+from app.helpdesk.models.media_attachment import MediaAttachmentCounts
 from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.models.ticket import Ticket, TicketStatus
 from app.helpdesk.services.ticket_internal_comment_service import TicketInternalComment
 from app.helpdesk.services.ticket_clarification_service import TicketClarificationService
-from app.helpdesk.texts.specialist_texts import render_group_ticket, render_open_tickets_list
+from app.helpdesk.texts.specialist_texts import (
+    render_group_ticket,
+    render_internal_comment_prompt,
+    render_open_tickets_list,
+)
 from app.helpdesk.texts.user_texts import (
     render_ticket_closed_notification,
     render_ticket_closed_with_reply_notification,
@@ -13,6 +18,16 @@ from app.helpdesk.texts.user_texts import (
 
 
 class SpecialistTextsTests(unittest.TestCase):
+    def test_render_internal_comment_prompt_does_not_ask_for_topic(self) -> None:
+        text = render_internal_comment_prompt(
+            ticket_id="T-00107",
+            category_title="Замок",
+            object_text="Номер 111",
+        )
+
+        self.assertIn("Введите внутренний комментарий", text)
+        self.assertNotIn("Введите тему", text)
+
     def test_render_open_tickets_list_formats_tickets_as_html_blocks(self) -> None:
         tickets = [
             Ticket(
@@ -225,6 +240,26 @@ class SpecialistTextsTests(unittest.TestCase):
         self.assertIn("Проверен uplink &amp; перезапущен access point", text)
         self.assertNotIn("Источник:", text)
         self.assertNotIn("Статус:", text.split("Внутренний комментарий:", 1)[1])
+
+    def test_render_group_ticket_includes_internal_comment_attachment_counts(self) -> None:
+        ticket = Ticket(
+            id="T-00021",
+            user_id=101,
+            category="Интернет",
+            text="Нет интернета",
+        )
+        comment = TicketInternalComment(
+            ticket_id="T-00021",
+            body="Без текста",
+            created_at=datetime.now(timezone.utc),
+            attachment_counts=MediaAttachmentCounts(photo_count=1, video_count=2),
+        )
+
+        text = render_group_ticket(ticket, last_internal_comment=comment)
+
+        self.assertIn("Вложения к комментарию:", text)
+        self.assertIn("Фото: 1", text)
+        self.assertIn("Видео: 2", text)
 
     def test_render_group_ticket_uses_location_display_when_room_is_missing(self) -> None:
         ticket = Ticket(

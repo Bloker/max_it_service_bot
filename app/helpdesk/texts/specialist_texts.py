@@ -44,6 +44,12 @@ def render_internal_comment_prompt(
     """Форматирует приглашение для внутреннего комментария специалиста."""
 
     lines = [f"Введите внутренний комментарий по заявке {escape(ticket_id)}.", ""]
+    lines.append(
+        "Можно отправить текст, фото, видео или файл.\n"
+        "Всё, что придёт в течение 15 секунд после последнего сообщения, "
+        "будет сохранено одним комментарием."
+    )
+    lines.append("")
     if object_text:
         lines.append(f"Объект: {escape(object_text)}")
     if category_title:
@@ -109,10 +115,18 @@ def render_group_ticket(
         )
     if last_internal_comment is not None:
         comment_text = escape(last_internal_comment.card_text)
-        blocks.append(
-            "Внутренний комментарий:\n"
-            f"{comment_text}"
-        )
+        comment_block = "Внутренний комментарий:\n" f"{comment_text}"
+        counts = last_internal_comment.attachment_counts
+        if counts.total_count:
+            lines = ["", "Вложения к комментарию:"]
+            if counts.photo_count:
+                lines.append(f"Фото: {counts.photo_count}")
+            if counts.video_count:
+                lines.append(f"Видео: {counts.video_count}")
+            if counts.document_count:
+                lines.append(f"Файлы: {counts.document_count}")
+            comment_block += "\n" + "\n".join(lines).strip()
+        blocks.append(comment_block)
     return "\n\n".join(blocks)
 
 

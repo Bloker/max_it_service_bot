@@ -134,6 +134,16 @@ class ObservabilityConfig:
 
 
 @dataclass(frozen=True)
+class MediaConfig:
+    """Настройки хранения и агрегации media-вложений."""
+
+    storage_root: str
+    collection_window_sec: int
+    max_attachments_per_item: int
+    max_file_size_mb: int
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Полная конфигурация приложения."""
 
@@ -145,6 +155,7 @@ class AppConfig:
     wifi_link: WifiLinkConfig
     netarium: NetariumConfig
     observability: ObservabilityConfig
+    media: MediaConfig
 
 
 def _load_environment() -> None:
@@ -482,6 +493,18 @@ def get_config() -> AppConfig:
         ticket_events_enabled=_parse_bool_env("MAX_TICKET_EVENTS_ENABLED", True),
         network_tool_runs_enabled=_parse_bool_env("MAX_NETWORK_TOOL_RUNS_ENABLED", True),
     )
+    media_storage_root = os.getenv("MAX_MEDIA_STORAGE_ROOT", "./data/media").strip()
+    media_collection_window_sec = _parse_int_env("MAX_MEDIA_COLLECTION_WINDOW_SEC", 15)
+    media_max_attachments_per_item = _parse_int_env("MAX_MEDIA_MAX_ATTACHMENTS_PER_ITEM", 10)
+    media_max_file_size_mb = _parse_int_env("MAX_MEDIA_MAX_FILE_SIZE_MB", 50)
+    if not media_storage_root:
+        raise RuntimeError("MAX_MEDIA_STORAGE_ROOT must not be empty")
+    if media_collection_window_sec <= 0:
+        raise RuntimeError("MAX_MEDIA_COLLECTION_WINDOW_SEC must be > 0")
+    if media_max_attachments_per_item <= 0:
+        raise RuntimeError("MAX_MEDIA_MAX_ATTACHMENTS_PER_ITEM must be > 0")
+    if media_max_file_size_mb <= 0:
+        raise RuntimeError("MAX_MEDIA_MAX_FILE_SIZE_MB must be > 0")
 
     return AppConfig(
         bot=BotConfig(
@@ -543,6 +566,12 @@ def get_config() -> AppConfig:
             cache_ttl_sec=netarium_cache_ttl_sec,
         ),
         observability=observability,
+        media=MediaConfig(
+            storage_root=media_storage_root,
+            collection_window_sec=media_collection_window_sec,
+            max_attachments_per_item=media_max_attachments_per_item,
+            max_file_size_mb=media_max_file_size_mb,
+        ),
     )
 
 

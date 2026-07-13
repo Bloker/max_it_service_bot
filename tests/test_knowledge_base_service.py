@@ -96,6 +96,26 @@ class KnowledgeBaseServiceTests(unittest.TestCase):
         self.assertEqual(ticket_contexts.saved_meta["source"], "ticket_note")
         self.assertFalse(hasattr(kb_repository, "create_ticket_link"))
 
+    def test_ticket_note_propagates_knowledge_article_save_failure(self) -> None:
+        service = KnowledgeBaseService(repository=_FailingKnowledgeRepository())
+        ticket = Ticket(id="T-00102", user_id=100, category="ТВ", text="Не работает ТВ")
+        room_context = RoomTicketContext(
+            ticket_key=ticket.ticket_id,
+            hotel_id=2,
+            location_id=12,
+            issue_category_id=3,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "knowledge write failed"):
+            service.save_ticket_note(
+                ticket=ticket,
+                actor_user_id=10,
+                actor_name="Дмитрий",
+                title="Нет сигнала",
+                text="Проверить питание.",
+                room_context=room_context,
+            )
+
 
 class _FakeLocationRepository:
     def __init__(self, *, default_hotel, fallback_hotel) -> None:
@@ -176,6 +196,11 @@ class _FakeKnowledgeRepository:
             "limit": limit,
         }
         return []
+
+
+class _FailingKnowledgeRepository(_FakeKnowledgeRepository):
+    def create_article(self, payload):
+        raise RuntimeError("knowledge write failed")
 
 
 class _FakeTicketContexts:

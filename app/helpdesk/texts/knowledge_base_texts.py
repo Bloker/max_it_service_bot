@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from html import escape
 
+from app.helpdesk.models.media_attachment import MediaAttachmentCounts
 from app.helpdesk.models.knowledge_base import KnowledgeArticle, KnowledgeScope
 from app.helpdesk.repositories.location_repository import IssueCategoryRef
 
@@ -42,6 +43,20 @@ def render_comment_body_prompt(*, ticket_id: str, title: str) -> str:
         "Введите заметку.\n\n"
         f"{COMMENT_WARNING_TEXT}"
     )
+
+
+def render_media_collection_prompt(*, title: str | None = None) -> str:
+    """Форматирует prompt окна 15-секундного сбора вложений для KB."""
+
+    lines = []
+    if title:
+        lines.extend(["Тема:", escape(title), ""])
+    lines.append("Можно приложить фото, видео или файл.")
+    lines.append(
+        "Всё, что придёт в течение 15 секунд после последнего сообщения, "
+        "будет сохранено к заметке."
+    )
+    return "\n".join(lines)
 
 
 def render_kb_scope_menu(scopes: tuple[KnowledgeScope, ...]) -> str:
@@ -92,18 +107,27 @@ def render_kb_article(
     *,
     scope_title: str,
     category_title: str,
+    attachment_counts: MediaAttachmentCounts | None = None,
 ) -> str:
     """Форматирует карточку одной статьи KB."""
 
-    return "\n".join(
-        [
-            f"<b>База знаний · {escape(scope_title)} · {escape(category_title)}</b>",
-            "",
-            f"<b>{escape(article.title)}</b>",
-            "",
-            escape(article.body),
-        ]
-    )
+    lines = [
+        f"<b>База знаний · {escape(scope_title)} · {escape(category_title)}</b>",
+        "",
+        f"<b>{escape(article.title)}</b>",
+        "",
+        escape(article.body),
+    ]
+    counts = attachment_counts or MediaAttachmentCounts()
+    if counts.total_count:
+        lines.extend(["", "Вложения:"])
+        if counts.photo_count:
+            lines.append(f"Фото: {counts.photo_count}")
+        if counts.video_count:
+            lines.append(f"Видео: {counts.video_count}")
+        if counts.document_count:
+            lines.append(f"Файлы: {counts.document_count}")
+    return "\n".join(lines)
 
 
 def render_manual_article_category_prompt(scope_title: str) -> str:
@@ -145,6 +169,22 @@ def render_manual_article_saved(scope_title: str, category_title: str, title: st
         "Заметка сохранена в базу знаний.\n\n"
         f"Раздел: {escape(scope_title)}\n"
         f"Категория: {escape(category_title)}\n"
+        f"Тема: {escape(title)}"
+    )
+
+
+def render_manual_article_saved_with_attachments(
+    scope_title: str,
+    category_title: str,
+    title: str,
+    attachment_count: int,
+) -> str:
+    """Форматирует подтверждение сохранения заметки с количеством вложений."""
+
+    return (
+        "Заметка сохранена в базу знаний.\n\n"
+        f"Раздел: {escape(scope_title)}\n"
+        f"Категория: {escape(category_title)}\n"
         f"Тема: {escape(title)}\n"
-        "Статус: candidate"
+        f"Вложения: {attachment_count}."
     )

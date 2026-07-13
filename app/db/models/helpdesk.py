@@ -132,6 +132,42 @@ class TicketAttachment(Base):
     )
 
 
+class MediaAttachment(Base):
+    """Media metadata комментариев и статей KB."""
+
+    __tablename__ = "media_attachments"
+    __table_args__ = (
+        Index("idx_media_attachments_owner", "owner_type", "owner_id"),
+        Index("idx_media_attachments_ticket", "ticket_key"),
+        Index("idx_media_attachments_location", "hotel_id", "location_id"),
+        Index("idx_media_attachments_created_at", "created_at"),
+        {"schema": "helpdesk"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    owner_type: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[int | None] = mapped_column(BigInteger)
+    ticket_key: Mapped[str | None] = mapped_column(Text)
+    hotel_id: Mapped[int | None] = mapped_column(BigInteger)
+    location_id: Mapped[int | None] = mapped_column(BigInteger)
+    media_type: Mapped[str] = mapped_column(Text, nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(Text)
+    file_name: Mapped[str | None] = mapped_column(Text)
+    file_size: Mapped[int | None] = mapped_column(BigInteger)
+    max_file_id: Mapped[str | None] = mapped_column(Text)
+    max_attachment_id: Mapped[str | None] = mapped_column(Text)
+    storage_path: Mapped[str | None] = mapped_column(Text)
+    public_url: Mapped[str | None] = mapped_column(Text)
+    checksum: Mapped[str | None] = mapped_column(Text)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_by: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
 class KnowledgeArticle(Base):
     """Статья базы знаний HelpDesk."""
 
@@ -207,6 +243,7 @@ class KnowledgeScope(Base):
 
 __all__ = [
     "KnowledgeScope",
+    "MediaAttachment",
     "Ticket",
     "TicketAttachment",
     "TicketComment",

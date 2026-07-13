@@ -29,6 +29,7 @@ COMMENT_CLOSING_REPLY = "closing_reply"
 ATTACHMENT_SOURCE_TICKET_INITIAL = "ticket_initial"
 ATTACHMENT_SOURCE_SPECIALIST_CLARIFICATION = "specialist_clarification"
 ATTACHMENT_SOURCE_USER_REPLY = "user_reply"
+ATTACHMENT_SOURCE_CLOSING_REPLY = "closing_reply"
 
 
 @dataclass(slots=True)
@@ -307,6 +308,7 @@ class TicketClarificationService:
         actor_user_id: int,
         actor_name: str,
         text: str,
+        attachments: list[Any] | None = None,
         source_message_id: str | None = None,
         target_message_id: str | None = None,
         actor_role: str = "IT specialist",
@@ -323,7 +325,7 @@ class TicketClarificationService:
             target_message_id=target_message_id,
         )
         self._closing_replies[ticket_id] = item
-        self._save_comment_safely(
+        comment = self._save_comment_safely(
             ticket_id=ticket_id,
             direction=COMMENT_CLOSING_REPLY,
             body=text,
@@ -333,6 +335,13 @@ class TicketClarificationService:
             source_message_id=source_message_id,
             target_message_id=target_message_id,
             meta={"closed_with_reply": True, "attached_to_card": True},
+        )
+        self._save_attachments_safely(
+            ticket_id=ticket_id,
+            attachments=attachments,
+            source=ATTACHMENT_SOURCE_CLOSING_REPLY,
+            comment_id=comment.id if comment else None,
+            source_message_id=source_message_id,
         )
         return item
 

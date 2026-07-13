@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import unittest
 
+from app.helpdesk.models.media_attachment import MediaAttachmentCounts
 from app.helpdesk.models.knowledge_base import KnowledgeArticle
 from app.helpdesk.repositories.location_repository import IssueCategoryRef
 from app.helpdesk.texts.knowledge_base_texts import (
     render_comment_prompt,
     render_kb_article,
     render_kb_category,
+    render_manual_article_saved,
+    render_media_collection_prompt,
 )
 
 
@@ -91,6 +94,27 @@ class KnowledgeBaseTextsTests(unittest.TestCase):
         self.assertNotIn("internal", text)
         self.assertIn("Нужно перепрошить приставку", text)
 
+    def test_article_card_can_show_attachment_counts(self) -> None:
+        article = KnowledgeArticle(
+            id=1,
+            scope_id=1,
+            hotel_id=1,
+            category_id=10,
+            title="Приставка висит на запуске",
+            body="Нужно перепрошить приставку",
+        )
+
+        text = render_kb_article(
+            article,
+            scope_title="Джамайка",
+            category_title="ТВ",
+            attachment_counts=MediaAttachmentCounts(photo_count=1, document_count=1),
+        )
+
+        self.assertIn("Вложения:", text)
+        self.assertIn("Фото: 1", text)
+        self.assertIn("Файлы: 1", text)
+
     def test_empty_category_screen_shows_empty_message(self) -> None:
         """Пустая категория явно сообщает об отсутствии тем."""
 
@@ -101,6 +125,18 @@ class KnowledgeBaseTextsTests(unittest.TestCase):
         )
 
         self.assertIn("Тем пока нет.", text)
+
+    def test_media_collection_prompt_mentions_15_seconds(self) -> None:
+        text = render_media_collection_prompt(title="Нет сигнала")
+
+        self.assertIn("15 секунд", text)
+        self.assertIn("фото, видео или файл", text)
+
+    def test_manual_article_saved_no_longer_shows_candidate_status(self) -> None:
+        text = render_manual_article_saved("Джамайка", "ТВ", "Нет сигнала")
+
+        self.assertNotIn("candidate", text)
+        self.assertNotIn("Статус:", text)
 
 
 if __name__ == "__main__":
