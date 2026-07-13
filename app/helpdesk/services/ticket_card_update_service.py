@@ -302,6 +302,9 @@ class TicketCardUpdateService:
         attached_reply = self._get_attached_user_reply(ticket_id)
         if attached_reply and attached_reply.attachments:
             attachments.extend(attached_reply.attachments)
+        closing_reply = self._get_closing_reply(ticket_id)
+        if closing_reply and closing_reply.attachments:
+            attachments.extend(closing_reply.attachments)
         if keyboard:
             attachments.append(keyboard)
         return attachments or None

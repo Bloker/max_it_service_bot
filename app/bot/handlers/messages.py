@@ -1398,15 +1398,34 @@ def register(dp) -> None:
         for message_id in transient_message_ids or []:
             if message_id and message_id not in message_ids:
                 message_ids.append(message_id)
-        for message_id in message_ids:
-            deleted = await max_messages.delete_message(bot=bot, message_id=message_id)
-            if not deleted:
-                logger.warning(
-                    "Failed to delete close-reply transient message: ticket_id=%s specialist_user_id=%s message_id=%s",
-                    ticket_id,
-                    specialist_user_id,
-                    message_id,
-                )
+        async def _delete_pass(*, retry: bool) -> None:
+            for message_id in message_ids:
+                deleted = await max_messages.delete_message(bot=bot, message_id=message_id)
+                if deleted:
+                    logger.info(
+                        "Close-reply transient message delete requested: ticket_id=%s "
+                        "specialist_user_id=%s message_id=%s retry=%s",
+                        ticket_id,
+                        specialist_user_id,
+                        message_id,
+                        retry,
+                    )
+                else:
+                    logger.warning(
+                        "Failed to delete close-reply transient message: ticket_id=%s "
+                        "specialist_user_id=%s message_id=%s retry=%s",
+                        ticket_id,
+                        specialist_user_id,
+                        message_id,
+                        retry,
+                    )
+
+        await _delete_pass(retry=False)
+        # MAX может ещё обрабатывать media-сообщение в момент первой попытки.
+        # Повтор не влияет на основную карточку и остаётся best-effort.
+        if message_ids:
+            await asyncio.sleep(2)
+            await _delete_pass(retry=True)
 
     async def _finalize_close_reply_collection(session) -> None:
         """Доставляет пользователю собранный ответ, затем закрывает заявку."""

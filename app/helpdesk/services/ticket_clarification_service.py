@@ -84,6 +84,7 @@ class TicketClosingReply:
     created_at: datetime
     source_message_id: str | None = None
     target_message_id: str | None = None
+    attachments: list[Any] | None = None
 
     @property
     def card_text(self) -> str:
@@ -323,6 +324,7 @@ class TicketClarificationService:
             created_at=datetime.now(tz=timezone.utc),
             source_message_id=source_message_id,
             target_message_id=target_message_id,
+            attachments=list(attachments or []),
         )
         self._closing_replies[ticket_id] = item
         comment = self._save_comment_safely(
@@ -508,6 +510,10 @@ class TicketClarificationService:
             created_at=comment.created_at,
             source_message_id=comment.source_message_id,
             target_message_id=comment.target_message_id,
+            attachments=self._restore_attachments_safely(
+                ticket_id=comment.ticket_id,
+                comment_id=comment.id,
+            ),
         )
 
 

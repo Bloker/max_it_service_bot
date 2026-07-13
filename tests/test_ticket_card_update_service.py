@@ -228,6 +228,40 @@ class TicketCardUpdateServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attachments[3].payload.buttons[0][0].text, "Взять в работу")
         self.assertIn("Ответ пользователя:", max_messages.edit_calls[0]["text"])
 
+    async def test_updates_card_with_closing_reply_media_before_keyboard(self) -> None:
+        links = TicketLinkService()
+        links.bind_group_message("T-00007", "root-mid", primary=True)
+        clarifications = TicketClarificationService()
+        clarifications.save_closing_reply(
+            ticket_id="T-00007",
+            actor_user_id=501,
+            actor_name="Spec",
+            text="Работы выполнены",
+            attachments=["close-photo", "close-video"],
+        )
+        max_messages = FakeMaxMessages(edit_result=True)
+        service = TicketCardUpdateService(
+            ticket_links=links,
+            group_chat_id=-100,
+            max_messages=max_messages,
+            clarifications=clarifications,
+        )
+        ticket = Ticket(
+            id="T-00007",
+            user_id=107,
+            category="Интернет",
+            text="Test",
+            status=TicketStatus.CLOSED,
+        )
+
+        updated = await service.update_group_ticket_card(bot=object(), ticket=ticket)
+
+        self.assertTrue(updated)
+        attachments = max_messages.edit_calls[0]["attachments"]
+        self.assertEqual("close-photo", attachments[0])
+        self.assertEqual("close-video", attachments[1])
+        self.assertIn("Ответ при закрытии:", max_messages.edit_calls[0]["text"])
+
     async def test_updates_card_with_last_internal_comment_block(self) -> None:
         links = TicketLinkService()
         links.bind_group_message("T-00006", "root-mid", primary=True)

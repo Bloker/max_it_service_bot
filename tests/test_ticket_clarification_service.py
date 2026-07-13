@@ -127,6 +127,13 @@ class TicketClarificationServiceTests(unittest.TestCase):
         self.assertEqual(1, len(repository.attachments))
         self.assertEqual("video", repository.attachments[0].platform_attachment_type)
         self.assertEqual("closing_reply", repository.attachments[0].meta["source"])
+        self.assertEqual([attachment], service.get_closing_reply("T-00001").attachments)
+
+        restored = TicketClarificationService(repository=repository).get_closing_reply("T-00001")
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(1, len(restored.attachments))
+        self.assertEqual("video-token", restored.attachments[0].payload.token)
 
     def test_restores_last_clarification_from_repository(self) -> None:
         repository = FakeTicketContextRepository()
