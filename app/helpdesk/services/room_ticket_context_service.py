@@ -50,6 +50,23 @@ class RoomTicketContextService:
             requires_location=None,
         )
 
+    def find_location_category(
+        self,
+        hotel_id: int,
+        category_code: str,
+    ) -> IssueCategoryRef | None:
+        """Находит категорию заявки по номеру по стабильному коду."""
+
+        normalized_code = category_code.strip().lower()
+        return next(
+            (
+                category
+                for category in self.list_location_categories(hotel_id)
+                if category.code.strip().lower() == normalized_code
+            ),
+            None,
+        )
+
     def find_other_category(self, hotel_id: int) -> IssueCategoryRef | None:
         """Находит категорию 'Прочее' для заявки без номера."""
 

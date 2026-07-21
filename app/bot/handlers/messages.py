@@ -42,6 +42,7 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_open_tickets_keyboard,
     build_registration_keyboard,
     build_ticket_actions_keyboard,
+    build_wifi_escalation_keyboard,
 )
 from app.helpdesk.models.media_attachment import (
     MEDIA_OWNER_KNOWLEDGE_ARTICLE,
@@ -67,6 +68,7 @@ from app.helpdesk.runtime import (
 )
 from app.helpdesk.services.attachment_filter_service import (
     collect_ticket_media_attachments,
+    get_attachment_token,
     is_audio_attachment,
     summarize_attachment,
 )
@@ -261,6 +263,51 @@ def _extract_shared_phone(event: MessageCreated) -> str | None:
     return None
 
 
+def _extract_forwarded_message_body(event: MessageCreated):
+    """Возвращает тело именно пересланного, а не reply-сообщения."""
+
+    linked = getattr(event.message, "link", None)
+    link_type = getattr(linked, "type", None)
+    link_type_value = getattr(link_type, "value", link_type)
+    if str(link_type_value or "").lower() != "forward":
+        return None
+    return getattr(linked, "message", None)
+
+
+def _extract_incoming_attachments(event: MessageCreated) -> list[Any]:
+    """Объединяет прямые и пересланные вложения без повторов по token."""
+
+    body = getattr(event.message, "body", None)
+    forwarded_body = _extract_forwarded_message_body(event)
+    candidates = [
+        *list(getattr(body, "attachments", None) or []),
+        *list(getattr(forwarded_body, "attachments", None) or []),
+    ]
+    result: list[Any] = []
+    seen_tokens: set[tuple[str, str]] = set()
+    for attachment in candidates:
+        token = get_attachment_token(attachment)
+        attachment_type = str(getattr(attachment, "type", "")).lower()
+        token_key = (attachment_type, token) if token else None
+        if token_key is not None and token_key in seen_tokens:
+            continue
+        if token_key is not None:
+            seen_tokens.add(token_key)
+        result.append(attachment)
+    return result
+
+
+def _extract_incoming_text(event: MessageCreated) -> str:
+    """Берёт собственный текст сообщения или подпись пересланного сообщения."""
+
+    body = getattr(event.message, "body", None)
+    direct_text = str(getattr(body, "text", "") or "").strip()
+    if direct_text:
+        return direct_text
+    forwarded_body = _extract_forwarded_message_body(event)
+    return str(getattr(forwarded_body, "text", "") or "").strip()
+
+
 def _extract_ticket_media_attachments(
     event: MessageCreated,
     *,
@@ -268,7 +315,7 @@ def _extract_ticket_media_attachments(
 ) -> list[Any]:
     """Отбирает вложения, которые можно переслать в заявку."""
 
-    attachments = list(getattr(event.message.body, "attachments", None) or [])
+    attachments = _extract_incoming_attachments(event)
     media_attachments = collect_ticket_media_attachments(
         attachments,
         include_audio=include_audio,
@@ -287,13 +334,15 @@ def _extract_ticket_audio_source_message(
 ) -> UserDraftSourceMessage | None:
     """Сохраняет исходное audio-сообщение для нативного forward в группу."""
 
-    attachments = list(getattr(event.message.body, "attachments", None) or [])
+    attachments = _extract_incoming_attachments(event)
     audio_attachments = [
         attachment for attachment in attachments if is_audio_attachment(attachment)
     ]
     if not audio_attachments:
         return None
-    source_mid = getattr(event.message.body, "mid", None)
+    body = getattr(event.message, "body", None)
+    forwarded_body = _extract_forwarded_message_body(event)
+    source_mid = getattr(body, "mid", None) or getattr(forwarded_body, "mid", None)
     return UserDraftSourceMessage(
         message=event.message,
         message_id=str(source_mid) if source_mid else None,
@@ -2340,7 +2389,7 @@ def register(dp) -> None:
         recipient_chat_id = int(event.message.recipient.chat_id)
 
         if recipient_chat_id == group_chat_id:
-            text = normalize_ticket_text(event.message.body.text, "")
+            text = normalize_ticket_text(_extract_incoming_text(event), "")
             message_attachments = _extract_ticket_media_attachments(event)
             audio_source_message = _extract_ticket_audio_source_message(event)
             relay_message_attachments = (
@@ -2677,7 +2726,7 @@ def register(dp) -> None:
             return
 
         text = normalize_ticket_text(
-            raw_text=event.message.body.text,
+            raw_text=_extract_incoming_text(event),
             empty_text_fallback="",
         )
         message_attachments = _extract_ticket_media_attachments(event)
@@ -2980,6 +3029,78 @@ def register(dp) -> None:
             )
             draft.step = "awaiting_tv_escalation_text"
             _schedule_problem_submit(sender_id, event._ensure_bot())
+            return
+
+        if draft.step == "awaiting_wifi_room_number":
+            if room_ticket_contexts is None or not draft.hotel_id:
+                user_flow.reset(sender_id)
+                await event.message.answer(
+                    text="Справочник номеров недоступен. Вернитесь в главное меню.",
+                    attachments=[_build_menu_for_user_with_registry(
+                        sender_id,
+                        cfg,
+                        access_registry,
+                    )],
+                )
+                return
+            room_number = text.strip()
+            if not room_number or room_number.startswith("/"):
+                await event.message.answer(
+                    text="Введите номер комнаты или домика текстом.",
+                    attachments=[build_jamaica_cancel_keyboard()],
+                )
+                return
+            location = room_ticket_contexts.find_location(
+                draft.hotel_id,
+                room_number,
+            )
+            if location is None:
+                await event.message.answer(
+                    text="Такого номера не существует. Введите номер ещё раз.",
+                    attachments=[build_jamaica_cancel_keyboard()],
+                )
+                return
+            internet_category = room_ticket_contexts.find_location_category(
+                draft.hotel_id,
+                "internet",
+            )
+            if internet_category is None:
+                user_flow.reset(sender_id)
+                logger.error(
+                    "Jamaica WiFi escalation category missing: hotel_id=%s user_id=%s",
+                    draft.hotel_id,
+                    sender_id,
+                )
+                await event.message.answer(
+                    text="Категория Интернет не настроена. Обратитесь к администратору.",
+                    attachments=[_build_menu_for_user_with_registry(
+                        sender_id,
+                        cfg,
+                        access_registry,
+                    )],
+                )
+                return
+            user_flow.set_wifi_room_escalation_context(
+                sender_id,
+                location_id=location.id,
+                room_number=location.room_number,
+                location_display=location.display_name,
+                category_id=internet_category.id,
+                category_code=internet_category.code,
+                category_title=internet_category.title,
+            )
+            await event.message.answer(
+                text=(
+                    f"Объект: {location.display_name}\n"
+                    f"Категория: {internet_category.title}\n\n"
+                    f"{user_texts.WIFI_ESCALATE_TEXT}\n\n"
+                    "Напишите текст обращения и при необходимости добавьте "
+                    "фото/файл несколькими сообщениями.\n"
+                    "Через 20 секунд после последнего сообщения обращение "
+                    "отправится автоматически."
+                ),
+                attachments=[build_wifi_escalation_keyboard()],
+            )
             return
 
         if draft.step == "awaiting_room_number":

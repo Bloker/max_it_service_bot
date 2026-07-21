@@ -24,9 +24,47 @@ class KnowledgeSessionsTests(unittest.TestCase):
 
         self.assertEqual(service.get(10), session)
         self.assertEqual(service.get_by_ticket("T-00100"), session)
+        self.assertEqual(service.get_for_actor_ticket(10, "T-00100"), session)
+        self.assertIsNone(service.get_for_actor_ticket(11, "T-00100"))
+        self.assertIsNone(service.get_for_actor_ticket(10, "T-00999"))
         self.assertEqual(session.location_id, 4)
         self.assertEqual(session.category_id, 3)
         service.finish(10)
+        self.assertIsNone(service.get(10))
+
+    def test_internal_comment_sessions_are_resolved_by_actor_and_ticket(self) -> None:
+        service = TicketInternalCommentSessionService()
+        first = service.start(
+            actor_user_id=10,
+            actor_name="Первый",
+            ticket_id="T-00100",
+        )
+        second = service.start(
+            actor_user_id=20,
+            actor_name="Второй",
+            ticket_id="T-00200",
+        )
+
+        self.assertEqual(service.get_for_actor_ticket(10, "T-00100"), first)
+        self.assertEqual(service.get_for_actor_ticket(20, "T-00200"), second)
+        self.assertIsNone(service.get_for_actor_ticket(10, "T-00200"))
+        self.assertEqual(service.get(10), first)
+
+    def test_internal_comment_cancel_requires_matching_actor_and_ticket(self) -> None:
+        service = TicketInternalCommentSessionService()
+        session = service.start(
+            actor_user_id=10,
+            actor_name="Первый",
+            ticket_id="T-00100",
+        )
+
+        self.assertIsNone(service.cancel_for_actor_ticket(20, "T-00100"))
+        self.assertIsNone(service.cancel_for_actor_ticket(10, "T-00999"))
+        self.assertEqual(service.get(10), session)
+        self.assertEqual(
+            service.cancel_for_actor_ticket(10, "T-00100"),
+            session,
+        )
         self.assertIsNone(service.get(10))
 
     def test_article_create_session_steps(self) -> None:

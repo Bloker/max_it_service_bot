@@ -309,6 +309,24 @@ def register(dp) -> None:
     access_registry = get_user_access_registry()
 
     async def _start_wifi_escalation(event: MessageCallback, user_id: int) -> None:
+        if room_ticket_contexts is not None:
+            hotel = room_ticket_contexts.find_user_hotel(user_id)
+            if hotel is not None and hotel.code == "jamaica":
+                user_flow.begin_wifi_room_escalation(
+                    user_id,
+                    hotel_id=hotel.id,
+                    hotel_code=hotel.code,
+                )
+                await event.message.answer(
+                    text=(
+                        "Введите номер комнаты или домика.\n"
+                        "Категория обращения будет выбрана автоматически: Интернет."
+                    ),
+                    attachments=[build_jamaica_cancel_keyboard()],
+                )
+                await event.answer(notification="Введите номер")
+                return
+
         category = "Сеть / Wi-Fi" if "Сеть / Wi-Fi" in categories else categories[-1]
         user_flow.begin_create(user_id)
         draft = user_flow.set_category(user_id, category)
@@ -322,6 +340,44 @@ def register(dp) -> None:
             attachments=[build_wifi_escalation_keyboard()],
         )
         await event.answer(notification="Опишите проблему для поддержки")
+
+    async def _start_wifi_general_escalation(
+        event: MessageCallback,
+        user_id: int,
+    ) -> None:
+        """Запускает общую WiFi-заявку Jamaica без запроса номера."""
+
+        if room_ticket_contexts is not None:
+            hotel = room_ticket_contexts.find_user_hotel(user_id)
+            if hotel is not None and hotel.code == "jamaica":
+                internet_category = room_ticket_contexts.find_location_category(
+                    hotel.id,
+                    "internet",
+                )
+                if internet_category is None:
+                    await event.answer(notification="Категория Интернет не настроена")
+                    return
+                user_flow.begin_wifi_general_escalation(
+                    user_id,
+                    hotel_id=hotel.id,
+                    hotel_code=hotel.code,
+                    category_id=internet_category.id,
+                    category_code=internet_category.code,
+                    category_title=internet_category.title,
+                )
+                await event.message.answer(
+                    text=(
+                        "Опишите проблему с Wi-Fi у гостей. Можно отправить "
+                        "несколько сообщений и фото/файл.\n"
+                        "Через 20 секунд после последнего сообщения обращение "
+                        "отправится автоматически."
+                    ),
+                    attachments=[build_jamaica_cancel_keyboard()],
+                )
+                await event.answer(notification="Опишите проблему")
+                return
+
+        await _start_wifi_escalation(event, user_id)
 
     async def _start_tv_escalation(event: MessageCallback, user_id: int) -> None:
         if "TV у гостя" in categories:
@@ -1426,7 +1482,7 @@ def register(dp) -> None:
             return
 
         if action == "wifi_scope_all":
-            await _start_wifi_escalation(event, user_id)
+            await _start_wifi_general_escalation(event, user_id)
             return
 
         if action == "wifi_device_mobile":
@@ -1787,14 +1843,14 @@ def register(dp) -> None:
         """Отменяет ожидающий ввод внутреннего комментария."""
 
         actor_id = int(event.callback.user.user_id)
+        clicked_message_id = getattr(getattr(event.message, "body", None), "mid", None)
+        clicked_message_id = str(clicked_message_id) if clicked_message_id else None
         media_session = media_collection_sessions.get(actor_id)
-        if media_session is not None and media_session.state == "collecting_ticket_comment":
-            if media_session.ticket_key != payload.ticket_id:
-                await max_messages.answer_callback(
-                    event=event,
-                    notification="Этот комментарий начал другой специалист",
-                )
-                return
+        if (
+            media_session is not None
+            and media_session.state == "collecting_ticket_comment"
+            and media_session.ticket_key == payload.ticket_id
+        ):
             media_collection_sessions.cancel(actor_id)
             await max_messages.answer_callback(
                 event=event,
@@ -1803,6 +1859,8 @@ def register(dp) -> None:
             cleanup_ids: list[str] = []
             if media_session.prompt_message_id:
                 cleanup_ids.append(media_session.prompt_message_id)
+            if clicked_message_id and clicked_message_id not in cleanup_ids:
+                cleanup_ids.append(clicked_message_id)
             for message_id in media_session.transient_message_ids:
                 if message_id and message_id not in cleanup_ids:
                     cleanup_ids.append(message_id)
@@ -1818,29 +1876,70 @@ def register(dp) -> None:
                         payload.ticket_id,
                         message_id,
                     )
+            logger.info(
+                "Internal comment media collection canceled: actor_id=%s ticket_id=%s",
+                actor_id,
+                payload.ticket_id,
+            )
             return
-        session = internal_comment_sessions.get_by_ticket(payload.ticket_id)
+
+        session = internal_comment_sessions.get_for_actor_ticket(
+            actor_id,
+            payload.ticket_id,
+        )
         if session is None:
+            ticket_session = internal_comment_sessions.get_by_ticket(payload.ticket_id)
+            if ticket_session is not None and ticket_session.actor_user_id != actor_id:
+                await max_messages.answer_callback(
+                    event=event,
+                    notification=(
+                        "Этот комментарий начал другой специалист"
+                    ),
+                )
+                return
             await max_messages.answer_callback(
                 event=event,
                 notification="Комментарий уже отменён",
             )
-            return
-        if session.actor_user_id != actor_id:
-            await max_messages.answer_callback(
-                event=event,
-                notification="Этот комментарий начал другой специалист",
-            )
+            if clicked_message_id:
+                await max_messages.delete_message(
+                    bot=event._ensure_bot(),
+                    message_id=clicked_message_id,
+                )
             return
 
-        internal_comment_sessions.cancel(actor_id)
+        internal_comment_sessions.cancel_for_actor_ticket(
+            actor_id,
+            payload.ticket_id,
+        )
         await max_messages.answer_callback(
             event=event,
             notification="Ввод комментария отменён",
         )
-        await max_messages.delete_message(
-            bot=event._ensure_bot(),
-            message_id=session.prompt_message_id,
+        cleanup_ids = list(
+            dict.fromkeys(
+                message_id
+                for message_id in (session.prompt_message_id, clicked_message_id)
+                if message_id
+            )
+        )
+        for message_id in cleanup_ids:
+            deleted = await max_messages.delete_message(
+                bot=event._ensure_bot(),
+                message_id=message_id,
+            )
+            if not deleted:
+                logger.warning(
+                    "Internal comment prompt delete failed after cancel: "
+                    "actor_id=%s ticket_id=%s message_id=%s",
+                    actor_id,
+                    payload.ticket_id,
+                    message_id,
+                )
+        logger.info(
+            "Internal comment input canceled: actor_id=%s ticket_id=%s",
+            actor_id,
+            payload.ticket_id,
         )
 
     @dp.message_callback(SpecialistTicketPayload.filter())

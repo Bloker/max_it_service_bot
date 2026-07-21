@@ -119,6 +119,51 @@ class UserFlowServiceTests(unittest.TestCase):
         self.assertIsNone(draft.room_number)
         self.assertEqual(50, draft.issue_category_id)
 
+    def test_wifi_room_escalation_sets_room_and_internet_without_category_step(self) -> None:
+        user_id = 707
+
+        draft = self.service.begin_wifi_room_escalation(
+            user_id,
+            hotel_id=10,
+            hotel_code="jamaica",
+        )
+        self.assertEqual("awaiting_wifi_room_number", draft.step)
+
+        draft = self.service.set_wifi_room_escalation_context(
+            user_id,
+            location_id=20,
+            room_number="112",
+            location_display="Корпус 1, номер 112",
+            category_id=30,
+            category_code="internet",
+            category_title="Интернет",
+        )
+
+        self.assertEqual("awaiting_wifi_escalation_text", draft.step)
+        self.assertEqual("112", draft.room_number)
+        self.assertEqual(20, draft.location_id)
+        self.assertEqual("Интернет", draft.category)
+        self.assertEqual("internet", draft.issue_category_code)
+        self.assertTrue(draft.is_room_ticket_flow)
+
+    def test_wifi_general_escalation_uses_other_object_without_room(self) -> None:
+        draft = self.service.begin_wifi_general_escalation(
+            808,
+            hotel_id=10,
+            hotel_code="jamaica",
+            category_id=30,
+            category_code="internet",
+            category_title="Интернет",
+        )
+
+        self.assertEqual("awaiting_wifi_escalation_text", draft.step)
+        self.assertEqual("Прочее", draft.location_display)
+        self.assertEqual("Интернет", draft.category)
+        self.assertEqual("internet", draft.issue_category_code)
+        self.assertIsNone(draft.location_id)
+        self.assertIsNone(draft.room_number)
+        self.assertTrue(draft.is_room_ticket_flow)
+
 
 if __name__ == "__main__":
     unittest.main()

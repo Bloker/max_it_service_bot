@@ -72,6 +72,47 @@ class UserFlowService:
         draft.is_room_ticket_flow = True
         return draft
 
+    def begin_wifi_room_escalation(
+        self,
+        user_id: int,
+        *,
+        hotel_id: int,
+        hotel_code: str,
+    ) -> UserDraft:
+        """Запрашивает номер перед WiFi-эскалацией пользователя Jamaica."""
+
+        draft = self.begin_room_ticket(
+            user_id,
+            hotel_id=hotel_id,
+            hotel_code=hotel_code,
+        )
+        draft.step = "awaiting_wifi_room_number"
+        return draft
+
+    def begin_wifi_general_escalation(
+        self,
+        user_id: int,
+        *,
+        hotel_id: int,
+        hotel_code: str,
+        category_id: int,
+        category_code: str,
+        category_title: str,
+    ) -> UserDraft:
+        """Начинает общую WiFi-заявку Jamaica без номера комнаты."""
+
+        draft = self.begin_room_ticket_other(
+            user_id,
+            hotel_id=hotel_id,
+            hotel_code=hotel_code,
+            category_id=category_id,
+            category_code=category_code,
+            category_title=category_title,
+        )
+        draft.location_display = "Прочее"
+        draft.step = "awaiting_wifi_escalation_text"
+        return draft
+
     def set_room_ticket_location(
         self,
         user_id: int,
@@ -105,6 +146,34 @@ class UserFlowService:
         draft.issue_category_code = category_code
         draft.issue_category_title = category_title
         draft.step = "awaiting_problem_text"
+        return draft
+
+    def set_wifi_room_escalation_context(
+        self,
+        user_id: int,
+        *,
+        location_id: int,
+        room_number: str,
+        location_display: str,
+        category_id: int,
+        category_code: str,
+        category_title: str,
+    ) -> UserDraft:
+        """Сохраняет номер и готовую категорию WiFi-заявки Jamaica."""
+
+        self.set_room_ticket_location(
+            user_id,
+            location_id=location_id,
+            room_number=room_number,
+            location_display=location_display,
+        )
+        draft = self.set_room_ticket_category(
+            user_id,
+            category_id=category_id,
+            category_code=category_code,
+            category_title=category_title,
+        )
+        draft.step = "awaiting_wifi_escalation_text"
         return draft
 
     def begin_room_ticket_other(

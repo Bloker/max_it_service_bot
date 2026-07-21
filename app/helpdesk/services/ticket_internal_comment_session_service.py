@@ -69,6 +69,18 @@ class TicketInternalCommentSessionService:
 
         return next((item for item in self._sessions.values() if item.ticket_id == ticket_id), None)
 
+    def get_for_actor_ticket(
+        self,
+        actor_user_id: int,
+        ticket_id: str,
+    ) -> TicketInternalCommentSession | None:
+        """Возвращает сессию специалиста по нужной заявке."""
+
+        session = self.get(actor_user_id)
+        if session is None or session.ticket_id != ticket_id:
+            return None
+        return session
+
     def set_prompt_message_id(
         self, actor_user_id: int, message_id: str | None
     ) -> TicketInternalCommentSession | None:
@@ -87,4 +99,16 @@ class TicketInternalCommentSessionService:
     def cancel(self, actor_user_id: int) -> TicketInternalCommentSession | None:
         """Отменяет сессию специалиста."""
 
+        return self.finish(actor_user_id)
+
+    def cancel_for_actor_ticket(
+        self,
+        actor_user_id: int,
+        ticket_id: str,
+    ) -> TicketInternalCommentSession | None:
+        """Отменяет только принадлежащую специалисту сессию нужной заявки."""
+
+        session = self.get_for_actor_ticket(actor_user_id, ticket_id)
+        if session is None:
+            return None
         return self.finish(actor_user_id)

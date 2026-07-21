@@ -21,6 +21,65 @@ UpdateProcessor = Callable[[dict[str, Any]], Awaitable[bool]]
 WEBHOOK_SECRET_KEY = web.AppKey("webhook_secret", str)
 UPDATE_PROCESSOR_KEY = web.AppKey("update_processor", UpdateProcessor)
 WEBHOOK_ADAPTER_KEY = web.AppKey("webhook_adapter", Any)
+UPDATE_DEDUPLICATOR_KEY = web.AppKey("update_deduplicator", Any)
+
+WEBHOOK_DEDUP_TTL_SEC = 600.0
+WEBHOOK_DEDUP_MAX_ENTRIES = 10_000
+
+
+class WebhookUpdateDeduplicator:
+    """Не допускает повторную обработку одного webhook-сообщения MAX."""
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: float = WEBHOOK_DEDUP_TTL_SEC,
+        max_entries: int = WEBHOOK_DEDUP_MAX_ENTRIES,
+        clock: Callable[[], float] = monotonic,
+    ) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._max_entries = max_entries
+        self._clock = clock
+        self._seen_until: dict[str, float] = {}
+
+    def acquire(self, key: str) -> bool:
+        """Резервирует ключ до первого ``await`` обработчика."""
+
+        now = self._clock()
+        self._discard_expired(now)
+        if self._seen_until.get(key, 0.0) > now:
+            return False
+
+        if len(self._seen_until) >= self._max_entries:
+            oldest_key = next(iter(self._seen_until))
+            self._seen_until.pop(oldest_key, None)
+        self._seen_until[key] = now + self._ttl_seconds
+        return True
+
+    def release(self, key: str) -> None:
+        """Разрешает повтор после внутренней ошибки обработки."""
+
+        self._seen_until.pop(key, None)
+
+    def _discard_expired(self, now: float) -> None:
+        while self._seen_until:
+            oldest_key = next(iter(self._seen_until))
+            if self._seen_until[oldest_key] > now:
+                break
+            self._seen_until.pop(oldest_key, None)
+
+
+def _extract_update_deduplication_key(payload: dict[str, Any]) -> str | None:
+    """Возвращает стабильный ключ только для входящего сообщения."""
+
+    if payload.get("update_type") != "message_created":
+        return None
+    message = payload.get("message")
+    body = message.get("body") if isinstance(message, dict) else None
+    mid = body.get("mid") if isinstance(body, dict) else None
+    if not isinstance(mid, str) or not mid.strip():
+        return None
+    return f"message_created:{mid}"
 
 
 def _build_safe_update_summary(payload: dict[str, Any]) -> dict[str, Any]:
@@ -35,7 +94,7 @@ def _build_safe_update_summary(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "update_type": payload.get("update_type"),
         "has_message": isinstance(message, dict),
-        "has_mid": bool(message.get("mid")) if isinstance(message, dict) else False,
+        "has_mid": bool(body.get("mid")) if isinstance(body, dict) else False,
         "has_callback": isinstance(callback, dict),
         "has_attachments": bool(attachments) if isinstance(attachments, list) else False,
         "attachments_count": len(attachments) if isinstance(attachments, list) else 0,
@@ -126,9 +185,24 @@ async def handle_webhook(request: web.Request) -> web.Response:
         )
 
     summary = _build_safe_update_summary(payload)
+    deduplication_key = _extract_update_deduplication_key(payload)
+    deduplicator = request.app[UPDATE_DEDUPLICATOR_KEY]
+    if deduplication_key and not deduplicator.acquire(deduplication_key):
+        logger.warning(
+            "Duplicate webhook update ignored: update_type=%s has_mid=%s",
+            summary["update_type"],
+            summary["has_mid"],
+        )
+        return web.json_response(
+            {"ok": True, "duplicate": True},
+            status=HTTPStatus.OK,
+        )
+
     try:
         accepted = await request.app[UPDATE_PROCESSOR_KEY](payload)
     except Exception:
+        if deduplication_key:
+            deduplicator.release(deduplication_key)
         logger.exception(
             "Webhook update processing failed: summary=%s",
             summary,
@@ -159,6 +233,7 @@ def create_webhook_app(
     app = web.Application()
     app[WEBHOOK_SECRET_KEY] = cfg.webhook_secret
     app[UPDATE_PROCESSOR_KEY] = update_processor
+    app[UPDATE_DEDUPLICATOR_KEY] = WebhookUpdateDeduplicator()
 
     if startup_handler is not None:
         app.on_startup.append(startup_handler)
