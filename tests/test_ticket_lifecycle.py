@@ -106,6 +106,54 @@ class TicketLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ticket_created", audit_actions)
         self.assertIn("ticket_assigned", audit_actions)
 
+    async def test_reopen_preserves_assignee_and_is_idempotent(self) -> None:
+        repository = FakeObservabilityRepository()
+        service = TicketLifecycleService(
+            InMemoryTicketRepository(),
+            observability=ObservabilityService(repository=repository),
+        )
+        ticket = await service.create_ticket(101, "User", "cat", "text", None, None)
+        await service.take_ticket(ticket.ticket_id, 501, "Spec")
+        await service.close_ticket(ticket.ticket_id, 501, "Spec", ())
+
+        reopened = await service.reopen_ticket(
+            ticket.ticket_id,
+            actor_user_id=777,
+            actor_name="Admin",
+        )
+        duplicate = await service.reopen_ticket(
+            ticket.ticket_id,
+            actor_user_id=777,
+            actor_name="Admin",
+        )
+
+        self.assertTrue(reopened.ok)
+        self.assertEqual(reopened.ticket.status, TicketStatus.IN_PROGRESS)
+        self.assertEqual(reopened.ticket.assigned_to, 501)
+        self.assertFalse(duplicate.ok)
+        self.assertEqual(duplicate.reason, "already_open")
+        events = [item for item in repository.ticket_events if item.event_type == "ticket_reopened"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].old_status, "closed")
+        self.assertEqual(events[0].new_status, "in_progress")
+        self.assertTrue(events[0].metadata["assignee_preserved"])
+
+    async def test_reopen_without_assignee_returns_to_new(self) -> None:
+        ticket = await self.service.create_ticket(101, "User", "cat", "text", None, None)
+        await self.service.close_ticket(ticket.ticket_id, 777, "Admin", (777,))
+        await self.service.release_ticket(ticket.ticket_id, 777, (777,))
+        # Закрытая заявка обычно сохраняет назначившегося при закрытии. Для
+        # проверки ветки без исполнителя воспроизводим legacy-запись напрямую.
+        ticket.assigned_to = None
+        ticket.assignee_name = None
+        result = await self.service.reopen_ticket(
+            ticket.ticket_id,
+            actor_user_id=777,
+            actor_name="Admin",
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.ticket.status, TicketStatus.NEW)
+
 
 if __name__ == '__main__':
     unittest.main()

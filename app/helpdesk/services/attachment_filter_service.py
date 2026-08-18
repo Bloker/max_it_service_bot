@@ -112,8 +112,9 @@ def _payload_field_names(attachment: Any) -> list[str]:
         return []
     if isinstance(payload, dict):
         return sorted(str(key) for key in payload.keys())
-    if hasattr(payload, "model_fields"):
-        return sorted(str(key) for key in payload.model_fields.keys())
+    model_fields = getattr(type(payload), "model_fields", None)
+    if model_fields is not None:
+        return sorted(str(key) for key in model_fields.keys())
     if hasattr(payload, "__dict__"):
         return sorted(str(key) for key in payload.__dict__.keys())
     return []

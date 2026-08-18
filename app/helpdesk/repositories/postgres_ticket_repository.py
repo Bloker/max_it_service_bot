@@ -286,6 +286,42 @@ class PostgresTicketRepository:
             return TicketActionResult(ok=False, reason="not_found")
         return TicketActionResult(ok=True, reason="status_updated", ticket=self._row_to_ticket(updated))
 
+    async def reopen(self, ticket_id: str) -> TicketActionResult:
+        """Атомарно повторно открывает legacy-заявку."""
+
+        await self._ensure_initialized()
+        return await asyncio.to_thread(self._reopen_sync, ticket_id)
+
+    def _reopen_sync(self, ticket_id: str) -> TicketActionResult:
+        now = datetime.now(tz=timezone.utc)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM public.helpdesk_tickets WHERE ticket_id = %s FOR UPDATE",
+                    (ticket_id,),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    conn.commit()
+                    return TicketActionResult(ok=False, reason="not_found")
+                ticket = self._row_to_ticket(row)
+                if ticket.status != TicketStatus.CLOSED:
+                    conn.commit()
+                    return TicketActionResult(ok=False, reason="already_open", ticket=ticket)
+                status = TicketStatus.IN_PROGRESS if ticket.assigned_to else TicketStatus.NEW
+                cur.execute(
+                    """
+                    UPDATE public.helpdesk_tickets
+                    SET status = %s, updated_at = %s
+                    WHERE ticket_id = %s
+                    RETURNING *
+                    """,
+                    (status.value, now, ticket_id),
+                )
+                updated = cur.fetchone()
+            conn.commit()
+        return TicketActionResult(ok=True, reason="reopened", ticket=self._row_to_ticket(updated))
+
     async def assign(
         self,
         ticket_id: str,

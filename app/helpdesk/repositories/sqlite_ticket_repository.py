@@ -263,6 +263,39 @@ class SqliteTicketRepository:
             return TicketActionResult(ok=False, reason="not_found")
         return TicketActionResult(ok=True, reason="status_updated", ticket=self._row_to_ticket(updated))
 
+    async def reopen(self, ticket_id: str) -> TicketActionResult:
+        """Повторно открывает закрытую SQLite-заявку."""
+
+        await self._ensure_initialized()
+        return await asyncio.to_thread(self._reopen_sync, ticket_id)
+
+    def _reopen_sync(self, ticket_id: str) -> TicketActionResult:
+        now = datetime.now(tz=timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM helpdesk_tickets WHERE ticket_id = ?",
+                (ticket_id,),
+            ).fetchone()
+            if row is None:
+                conn.commit()
+                return TicketActionResult(ok=False, reason="not_found")
+            ticket = self._row_to_ticket(row)
+            if ticket.status != TicketStatus.CLOSED:
+                conn.commit()
+                return TicketActionResult(ok=False, reason="already_open", ticket=ticket)
+            status = TicketStatus.IN_PROGRESS if ticket.assigned_to else TicketStatus.NEW
+            conn.execute(
+                "UPDATE helpdesk_tickets SET status = ?, updated_at = ? WHERE ticket_id = ?",
+                (status.value, now, ticket_id),
+            )
+            updated = conn.execute(
+                "SELECT * FROM helpdesk_tickets WHERE ticket_id = ?",
+                (ticket_id,),
+            ).fetchone()
+            conn.commit()
+        return TicketActionResult(ok=True, reason="reopened", ticket=self._row_to_ticket(updated))
+
     async def assign(
         self,
         ticket_id: str,

@@ -14,9 +14,11 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_jamaica_main_menu_keyboard,
     build_main_menu_keyboard,
     build_registration_keyboard,
+    build_user_tickets_keyboard,
 )
 from app.helpdesk.runtime import (
     get_ticket_service,
+    get_ticket_link_service,
     get_user_flow_service,
 )
 from app.helpdesk.services.menu_service import get_helpdesk_commands
@@ -209,7 +211,15 @@ def register(dp) -> None:
 
         await event.message.answer(
             text=text,
-            attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+            attachments=[
+                build_user_tickets_keyboard(
+                    user_tickets,
+                    ticket_message_ids={
+                        ticket.ticket_id: get_ticket_link_service().get_user_message_id(ticket.ticket_id)
+                        for ticket in user_tickets
+                    },
+                )
+            ] if user_tickets else [_build_menu_for_user(user_id, cfg, access_registry)],
         )
 
     @dp.message_created(Command("network"))

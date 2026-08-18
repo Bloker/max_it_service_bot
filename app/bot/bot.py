@@ -169,34 +169,45 @@ async def main() -> None:
     bot = Bot(token=cfg.bot.token)
     dp = Dispatcher()
 
+    from app.monitoring.tls.runtime import build_tls_reminder_service
+
+    tls_reminder = build_tls_reminder_service(cfg=cfg, bot=bot)
+
     register_routes(dp)
 
     logger.info("Бот запускается: update_mode=%s", cfg.bot.update_mode)
 
-    if cfg.bot.update_mode == "webhook":
-        from app.bot.webhook_server import run_webhook_server
-
-        logger.info(
-            "Бот запущен в webhook-mode: host=%s port=%s path=%s health_path=%s",
-            cfg.bot.webhook_host,
-            cfg.bot.webhook_port,
-            cfg.bot.webhook_path,
-            cfg.bot.webhook_health_path,
-        )
-        await run_webhook_server(cfg=cfg.bot, dispatcher=dp, bot=bot)
-        return
-
-    configure_long_polling_limits(bot, cfg.bot)
+    if tls_reminder is not None:
+        tls_reminder.start()
 
     try:
-        await bot.delete_webhook()
-    except Exception as exc:
-        logger.warning("Ошибка удаления webhook: %s", exc)
+        if cfg.bot.update_mode == "webhook":
+            from app.bot.webhook_server import run_webhook_server
 
-    logger.info(
-        "Бот запущен и ожидает сообщений: polling_limit=%s polling_timeout=%s polling_min_interval=%s",
-        cfg.bot.polling_limit,
-        cfg.bot.polling_timeout_sec,
-        cfg.bot.polling_min_interval_sec,
-    )
-    await dp.start_polling(bot, skip_updates=cfg.bot.skip_updates_on_start)
+            logger.info(
+                "Бот запущен в webhook-mode: host=%s port=%s path=%s health_path=%s",
+                cfg.bot.webhook_host,
+                cfg.bot.webhook_port,
+                cfg.bot.webhook_path,
+                cfg.bot.webhook_health_path,
+            )
+            await run_webhook_server(cfg=cfg.bot, dispatcher=dp, bot=bot)
+            return
+
+        configure_long_polling_limits(bot, cfg.bot)
+
+        try:
+            await bot.delete_webhook()
+        except Exception as exc:
+            logger.warning("Ошибка удаления webhook: %s", exc)
+
+        logger.info(
+            "Бот запущен и ожидает сообщений: polling_limit=%s polling_timeout=%s polling_min_interval=%s",
+            cfg.bot.polling_limit,
+            cfg.bot.polling_timeout_sec,
+            cfg.bot.polling_min_interval_sec,
+        )
+        await dp.start_polling(bot, skip_updates=cfg.bot.skip_updates_on_start)
+    finally:
+        if tls_reminder is not None:
+            await tls_reminder.stop()

@@ -2,6 +2,7 @@ import unittest
 
 from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_attach_user_reply_keyboard,
+    build_attach_user_addition_keyboard,
     build_categories_keyboard,
     build_clarification_cancel_keyboard,
     build_clarification_reply_keyboard,
@@ -19,7 +20,10 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_knowledge_scope_keyboard,
     build_main_menu_keyboard,
     build_open_tickets_keyboard,
+    build_room_history_keyboard,
     build_ticket_actions_keyboard,
+    build_user_ticket_keyboard,
+    build_user_tickets_keyboard,
     format_kb_button_title,
 )
 from app.helpdesk.models.knowledge_base import KnowledgeScope, KnowledgeScopeType
@@ -268,6 +272,51 @@ class HelpdeskKeyboardTests(unittest.TestCase):
         self.assertEqual(buttons[-1][0].text, "Обновить список")
         self.assertEqual(buttons[-1][0].payload, "spc|open_list|-")
 
+    def test_open_tickets_keyboard_uses_links_when_source_cards_are_known(self) -> None:
+        ticket = Ticket(id="T-00001", user_id=101, category="Доступ", text="One")
+
+        keyboard = build_open_tickets_keyboard(
+            [ticket],
+            ticket_message_ids={"T-00001": "mid.ffffffffffffffff0000000000000001"},
+        )
+
+        button = keyboard.payload.buttons[0][0]
+        self.assertEqual(button.text, "T-00001")
+        self.assertEqual(button.type.value, "link")
+        self.assertEqual(button.url, "https://max.ru/c/-1/AAAAAAAAAAE")
+
+    def test_user_tickets_keyboard_uses_personal_card_link(self) -> None:
+        ticket = Ticket(id="T-00001", user_id=101, category="Доступ", text="One")
+
+        keyboard = build_user_tickets_keyboard(
+            [ticket],
+            ticket_message_ids={"T-00001": "mid.00000000000000650000000000000001"},
+        )
+
+        button = keyboard.payload.buttons[0][0]
+        self.assertEqual(button.text, "T-00001 · новое")
+        self.assertEqual(button.type.value, "link")
+        self.assertEqual(button.url, "https://max.ru/c/101/AAAAAAAAAAE")
+
+    def test_room_history_keyboard_contains_only_known_ticket_links(self) -> None:
+        from datetime import datetime
+
+        from app.helpdesk.models.room_ticket_history import RoomTicketHistoryItem
+
+        items = [
+            RoomTicketHistoryItem("T-00001", 1, 10, "ТВ", "новая", datetime.now()),
+            RoomTicketHistoryItem("T-00002", 1, 10, "ТВ", "закрыта", datetime.now()),
+        ]
+        keyboard = build_room_history_keyboard(
+            items,
+            ticket_message_ids={"T-00001": "mid.ffffffffffffffff0000000000000001"},
+        )
+
+        self.assertIsNotNone(keyboard)
+        button = keyboard.payload.buttons[0][0]
+        self.assertEqual(button.text, "T-00001")
+        self.assertEqual(button.type.value, "link")
+
     def test_ticket_actions_keyboard_for_new_ticket(self) -> None:
         ticket = Ticket(id="T-00001", user_id=101, category="Доступ", text="One")
 
@@ -276,8 +325,7 @@ class HelpdeskKeyboardTests(unittest.TestCase):
 
         self.assertEqual(buttons[0][0].text, "Взять в работу")
         self.assertEqual(buttons[0][0].payload, "spc|take|T-00001")
-        self.assertEqual(buttons[1][0].text, "Комментарий")
-        self.assertEqual(buttons[1][0].payload, "spc|comment|T-00001")
+        self.assertNotIn("Комментарий", [button.text for row in buttons for button in row])
         self.assertEqual(buttons[-1][0].text, "Не закрытые заявки")
 
     def test_ticket_actions_keyboard_adds_room_history_for_room_ticket(self) -> None:
@@ -290,9 +338,9 @@ class HelpdeskKeyboardTests(unittest.TestCase):
         self.assertIn("История номера", labels)
         self.assertEqual(
             [button.text for button in keyboard.payload.buttons[1]],
-            ["Комментарий", "Заметка"],
+            ["Заметка", "История номера"],
         )
-        history_button = keyboard.payload.buttons[2][0]
+        history_button = keyboard.payload.buttons[1][1]
         self.assertEqual(history_button.text, "История номера")
         self.assertEqual(history_button.payload, "spc|room_history|T-00088")
 
@@ -315,10 +363,10 @@ class HelpdeskKeyboardTests(unittest.TestCase):
         self.assertEqual(buttons[1][0].text, "Закрыть с ответом")
         self.assertEqual(buttons[1][0].payload, "spc|close_with_reply|T-00002")
         self.assertEqual(buttons[2][0].text, "Запросить уточнение")
-        self.assertEqual(buttons[3][0].text, "Комментарий")
+        self.assertNotIn("Комментарий", [button.text for row in buttons for button in row])
         self.assertEqual(buttons[-1][0].text, "Не закрытые заявки")
 
-    def test_ticket_actions_keyboard_places_comment_and_note_before_history(self) -> None:
+    def test_ticket_actions_keyboard_places_note_and_history_on_same_row(self) -> None:
         ticket = Ticket(
             id="T-00004",
             user_id=104,
@@ -332,9 +380,8 @@ class HelpdeskKeyboardTests(unittest.TestCase):
 
         self.assertEqual(
             [button.text for button in keyboard.payload.buttons[3]],
-            ["Комментарий", "Заметка"],
+            ["Заметка", "История номера"],
         )
-        self.assertEqual([button.text for button in keyboard.payload.buttons[4]], ["История номера"])
 
     def test_close_notification_menu_keyboard_contains_main_menu(self) -> None:
         keyboard = build_close_notification_menu_keyboard()
@@ -355,9 +402,10 @@ class HelpdeskKeyboardTests(unittest.TestCase):
         keyboard = build_ticket_actions_keyboard(ticket, room_context=room_context)
         buttons = keyboard.payload.buttons
 
-        self.assertEqual(len(buttons), 2)
-        self.assertEqual(buttons[0][0].text, "История номера")
-        self.assertEqual(buttons[1][0].text, "Не закрытые заявки")
+        self.assertEqual(len(buttons), 3)
+        self.assertEqual(buttons[0][0].text, "Открыть заявку")
+        self.assertEqual(buttons[1][0].text, "История номера")
+        self.assertEqual(buttons[2][0].text, "Не закрытые заявки")
 
     def test_ticket_actions_keyboard_for_closed_ticket_keeps_only_safe_navigation(self) -> None:
         ticket = Ticket(
@@ -371,8 +419,48 @@ class HelpdeskKeyboardTests(unittest.TestCase):
         keyboard = build_ticket_actions_keyboard(ticket)
         buttons = keyboard.payload.buttons
 
-        self.assertEqual(len(buttons), 1)
-        self.assertEqual(buttons[0][0].text, "Не закрытые заявки")
+        self.assertEqual(len(buttons), 2)
+        self.assertEqual(buttons[0][0].text, "Открыть заявку")
+        self.assertEqual(buttons[0][0].payload, "spc|reopen|T-00003")
+        self.assertEqual(buttons[1][0].text, "Не закрытые заявки")
+
+    def test_attach_user_addition_keyboard_contains_comment_id(self) -> None:
+        keyboard = build_attach_user_addition_keyboard("T-00011", 42)
+
+        button = keyboard.payload.buttons[0][0]
+        self.assertEqual(button.text, "Прикрепить к заявке")
+        self.assertEqual(button.payload, "spc|attach_add_42|T-00011")
+
+
+    def test_user_ticket_keyboard_allows_addition_only_for_active_ticket(self) -> None:
+        closed = Ticket(
+            id="T-00013",
+            user_id=1,
+            category="ТВ",
+            text="Нет сигнала",
+            status=TicketStatus.CLOSED,
+        )
+
+        closed_labels = [
+            button.text for row in build_user_ticket_keyboard(closed).payload.buttons for button in row
+        ]
+        for status in (TicketStatus.NEW, TicketStatus.IN_PROGRESS, TicketStatus.WAITING_USER):
+            with self.subTest(status=status):
+                active = Ticket(
+                    id="T-00012",
+                    user_id=1,
+                    category="ТВ",
+                    text="Нет сигнала",
+                    status=status,
+                )
+                active_labels = [
+                    button.text
+                    for row in build_user_ticket_keyboard(active).payload.buttons
+                    for button in row
+                ]
+                self.assertIn("➕ Дополнить заявку", active_labels)
+                self.assertIn("← Мои обращения", active_labels)
+        self.assertNotIn("➕ Дополнить заявку", closed_labels)
 
 
 if __name__ == "__main__":

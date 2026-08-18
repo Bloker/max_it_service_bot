@@ -16,8 +16,10 @@ class TicketLinkServiceTests(unittest.TestCase):
         self.assertEqual("T-00001", self.service.get_ticket_id_by_group_message("group-reply"))
 
     def test_user_message_mapping(self) -> None:
-        self.service.bind_user_message("T-00002", "user-mid-1")
-        self.assertEqual("T-00002", self.service.get_ticket_id_by_user_message("user-mid-1"))
+        self.service.bind_user_message("T-00002", "user-card-mid", primary=True)
+        self.service.bind_user_message("T-00002", "clarification-mid")
+        self.assertEqual("T-00002", self.service.get_ticket_id_by_user_message("clarification-mid"))
+        self.assertEqual("user-card-mid", self.service.get_user_message_id("T-00002"))
 
 
 if __name__ == "__main__":

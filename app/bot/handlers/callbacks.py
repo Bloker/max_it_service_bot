@@ -16,7 +16,7 @@ from app.admin.services.access_service import (
     can_view_user_menu,
     is_admin,
 )
-from app.bot.notifications import notify_user_ticket_closed
+from app.bot.notifications import notify_user_ticket_closed, notify_user_ticket_submitted
 from app.bot.services.max_message_service import MaxMessageService
 from app.common.user_helpers import get_full_name
 from app.helpdesk.keyboards.helpdesk_keyboards import (
@@ -27,6 +27,7 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_admin_user_actions_keyboard,
     build_admin_users_keyboard,
     build_clarification_cancel_keyboard,
+    build_close_notification_menu_keyboard,
     build_internal_comment_cancel_keyboard,
     build_close_reply_cancel_keyboard,
     build_categories_keyboard,
@@ -41,7 +42,11 @@ from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_knowledge_scope_keyboard,
     build_main_menu_keyboard,
     build_open_tickets_keyboard,
+    build_room_history_keyboard,
     build_ticket_actions_keyboard,
+    build_user_addition_cancel_keyboard,
+    build_user_ticket_keyboard,
+    build_user_tickets_keyboard,
     build_wifi_auth_keyboard,
     build_wifi_device_keyboard,
     build_wifi_escalation_keyboard,
@@ -72,6 +77,8 @@ from app.helpdesk.runtime import (
     get_ticket_clarification_service,
     get_ticket_link_service,
     get_ticket_service,
+    get_ticket_user_addition_service,
+    get_user_addition_session_service,
     get_user_reply_session_service,
     get_user_flow_service,
 )
@@ -292,6 +299,8 @@ def register(dp) -> None:
     media_collection_sessions = get_media_collection_session_service()
     ticket_clarifications = get_ticket_clarification_service()
     user_reply_sessions = get_user_reply_session_service()
+    user_addition_sessions = get_user_addition_session_service()
+    user_additions = get_ticket_user_addition_service()
     room_ticket_contexts = get_room_ticket_context_service()
     room_history = get_room_history_service()
     observability = get_observability_service()
@@ -302,6 +311,7 @@ def register(dp) -> None:
         max_messages=max_messages,
         clarifications=ticket_clarifications,
         internal_comments=internal_comments,
+        user_additions=user_additions,
         room_contexts=room_ticket_contexts,
         observability=observability,
     )
@@ -1121,13 +1131,108 @@ def register(dp) -> None:
             return
 
         if action == "my":
-            user_tickets = await tickets.list_user_tickets(user_id=user_id)
+            user_tickets = await tickets.list_user_tickets(
+                user_id=user_id,
+                include_closed=True,
+            )
             lines = [user_texts.user_ticket_line(ticket) for ticket in user_tickets]
+            user_message_ids = {
+                ticket.ticket_id: ticket_links.get_user_message_id(ticket.ticket_id)
+                for ticket in user_tickets
+            }
             await event.message.answer(
                 text=_build_user_ticket_list_text(lines),
-                attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
+                attachments=[
+                    build_user_tickets_keyboard(
+                        user_tickets,
+                        ticket_message_ids=user_message_ids,
+                    )
+                ],
             )
             await event.answer(notification="Показал обращения")
+            return
+
+        if action == "my_ticket":
+            ticket = await tickets.get_ticket((payload.value or "").strip())
+            if ticket is None or ticket.user_id != user_id:
+                await event.answer(notification="Заявка не найдена")
+                return
+            room_context = room_contexts.get_context(ticket.ticket_id)
+            await event.message.answer(
+                text=user_texts.render_user_ticket(ticket, room_context=room_context),
+                attachments=[build_user_ticket_keyboard(ticket)],
+                format=ParseMode.HTML,
+            )
+            await event.answer(notification=f"Открыта {ticket.ticket_id}")
+            return
+
+        if action == "ticket_add":
+            ticket = await tickets.get_ticket((payload.value or "").strip())
+            if ticket is None or ticket.user_id != user_id:
+                await event.answer(notification="Заявка не найдена")
+                return
+            if ticket.status == TicketStatus.CLOSED:
+                await event.answer(notification="Закрытую заявку нельзя дополнить")
+                return
+            previous = user_addition_sessions.reset(user_id)
+            if previous and previous.prompt_message_id:
+                await max_messages.delete_message(
+                    bot=event._ensure_bot(),
+                    message_id=previous.prompt_message_id,
+                )
+            media_collection_sessions.cancel(user_id)
+            sent = await event.message.answer(
+                text=(
+                    f"Дополнение к заявке {ticket.ticket_id}\n\n"
+                    "Отправьте дополнительную информацию."
+                ),
+                attachments=[build_user_addition_cancel_keyboard(ticket.ticket_id)],
+            )
+            prompt_message_id = _extract_message_id(sent)
+            user_addition_sessions.start(
+                user_id=user_id,
+                ticket_id=ticket.ticket_id,
+                prompt_message_id=prompt_message_id,
+            )
+            await event.answer(notification="Введите дополнение")
+            return
+
+        if action == "ticket_add_cancel":
+            session = user_addition_sessions.get(user_id)
+            media_session = media_collection_sessions.get(user_id)
+            expected_ticket_id = (payload.value or "").strip()
+            session_matches = session is not None and session.ticket_id == expected_ticket_id
+            media_matches = (
+                media_session is not None
+                and media_session.state == "collecting_user_addition"
+                and media_session.ticket_key == expected_ticket_id
+            )
+            if not session_matches and not media_matches:
+                await event.answer(notification="Дополнение уже отменено")
+                return
+            user_addition_sessions.reset(user_id)
+            if media_matches:
+                media_collection_sessions.cancel(user_id)
+            await max_messages.answer_callback(
+                event=event,
+                notification="Дополнение отменено",
+            )
+            prompt_message_id = (
+                session.prompt_message_id if session is not None
+                else media_session.prompt_message_id
+            )
+            if prompt_message_id:
+                await max_messages.delete_message(
+                    bot=event._ensure_bot(),
+                    message_id=prompt_message_id,
+                )
+            ticket = await tickets.get_ticket(expected_ticket_id)
+            if ticket is not None and ticket.user_id == user_id:
+                await event.message.answer(
+                    text=user_texts.render_user_ticket(ticket),
+                    attachments=[build_user_ticket_keyboard(ticket)],
+                    format=ParseMode.HTML,
+                )
             return
 
         if action == "kb_scope":
@@ -1686,26 +1791,22 @@ def register(dp) -> None:
                     )
                     ticket_clarifications.set_ticket_base_attachments(
                         ticket_id=ticket.ticket_id,
-                        attachments=media_attachments,
+                        attachments=draft_attachments,
                     )
 
                 user_flow.reset(user_id)
-                confirmation_mid = await max_messages.send_message(
+                user_message_id = await notify_user_ticket_submitted(
                     bot=event._ensure_bot(),
-                    user_id=user_id,
-                    text=user_texts.SUBMITTED_TEXT,
-                    text_format=None,
+                max_messages=max_messages,
+                ticket=ticket,
+                media_attachments=draft_attachments,
+                    room_context=room_context,
                 )
-                menu_sent = await event.message.answer(
-                    text=user_texts.WELCOME_TEXT,
-                    attachments=[_build_menu_for_user(user_id, cfg, access_registry)],
-                )
-                menu_mid = _extract_message_id(menu_sent)
-                user_message_id = confirmation_mid or menu_mid
                 if user_message_id:
                     ticket_links.bind_user_message(
                         ticket_id=ticket.ticket_id,
                         user_message_id=user_message_id,
+                        primary=True,
                     )
                 return
             except Exception:
@@ -1962,7 +2063,16 @@ def register(dp) -> None:
                 await event.answer(notification=specialist_texts.FORBIDDEN_TEXT)
                 return
             open_tickets = await tickets.list_open_tickets(limit=50)
-            attachments = [build_open_tickets_keyboard(open_tickets)] if open_tickets else None
+            group_message_ids = {
+                ticket.ticket_id: ticket_links.get_group_message_id(ticket.ticket_id)
+                for ticket in open_tickets
+            }
+            attachments = [
+                build_open_tickets_keyboard(
+                    open_tickets,
+                    ticket_message_ids=group_message_ids,
+                )
+            ] if open_tickets else None
             await event.message.answer(
                 text=_build_open_tickets_text(open_tickets),
                 attachments=attachments,
@@ -2032,11 +2142,20 @@ def register(dp) -> None:
                 )
                 return
 
+            history_message_ids = {
+                item.ticket_key: ticket_links.get_group_message_id(item.ticket_key)
+                for item in items
+            }
+            history_keyboard = build_room_history_keyboard(
+                items,
+                ticket_message_ids=history_message_ids,
+            )
             await event.message.answer(
                 text=room_history_texts.render_room_history(
                     room_context=room_context,
                     items=items,
                 ),
+                attachments=[history_keyboard] if history_keyboard else None,
                 format=ParseMode.HTML,
             )
             await max_messages.answer_callback(
@@ -2100,6 +2219,16 @@ def register(dp) -> None:
             )
             await observability.ticket_event(
                 ticket_id=ticket.ticket_id,
+                event_type="user_addition_attached_to_card",
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+                actor_role="IT specialist",
+                source="callback",
+                related_message_id=attached.group_message_id,
+                metadata={"comment_id": attached.comment_id, "card_updated": card_updated},
+            )
+            await observability.ticket_event(
+                ticket_id=ticket.ticket_id,
                 event_type="user_reply_attached_to_card",
                 actor_user_id=actor_id,
                 actor_name=actor_name,
@@ -2131,6 +2260,101 @@ def register(dp) -> None:
             )
             return
 
+        if action.startswith("attach_add_"):
+            if not can_view_service_functions(
+                user_id=actor_id,
+                admin_ids=admin_ids,
+                specialist_ids=specialist_ids,
+            ):
+                await max_messages.answer_callback(
+                    event=event,
+                    notification=specialist_texts.FORBIDDEN_TEXT,
+                )
+                return
+            try:
+                comment_id = int(action.removeprefix("attach_add_"))
+            except ValueError:
+                await max_messages.answer_callback(event=event, notification="Дополнение не найдено")
+                return
+            addition = user_additions.get(comment_id)
+            if addition is None or addition.ticket_id != ticket_id:
+                await max_messages.answer_callback(event=event, notification="Дополнение не найдено")
+                return
+            if addition.attached_to_card:
+                await max_messages.answer_callback(
+                    event=event,
+                    notification="Дополнение уже прикреплено к заявке.",
+                )
+                return
+            attached = user_additions.attach(comment_id)
+            ticket = await tickets.get_ticket(ticket_id)
+            if attached is None or ticket is None:
+                await max_messages.answer_callback(event=event, notification="Дополнение не найдено")
+                return
+            card_updated = await ticket_card_updates.update_group_ticket_card(
+                bot=event._ensure_bot(),
+                ticket=ticket,
+                notify=False,
+            )
+            await max_messages.answer_callback(
+                event=event,
+                notification=(
+                    "Дополнение прикреплено к заявке"
+                    if card_updated else "Дополнение сохранено, карточку обновить не удалось"
+                ),
+            )
+            body = getattr(event.message, "body", None)
+            await max_messages.delete_message(
+                bot=event._ensure_bot(),
+                message_id=str(getattr(body, "mid", "") or "") or None,
+            )
+            return
+
+        if action == "reopen":
+            if not can_view_service_functions(
+                user_id=actor_id,
+                admin_ids=admin_ids,
+                specialist_ids=specialist_ids,
+            ):
+                await max_messages.answer_callback(event=event, notification=specialist_texts.FORBIDDEN_TEXT)
+                return
+            result = await tickets.reopen_ticket(
+                ticket_id,
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+            )
+            if not result.ok or result.ticket is None:
+                notification = "Заявка уже открыта." if result.reason == "already_open" else specialist_texts.NOT_FOUND_TEXT
+                await max_messages.answer_callback(event=event, notification=notification)
+                return
+            await ticket_card_updates.update_group_ticket_card_from_callback(
+                event=event,
+                ticket=result.ticket,
+                notification="Заявка открыта повторно",
+                notify=False,
+            )
+            delivered = await max_messages.send_message(
+                bot=event._ensure_bot(),
+                user_id=result.ticket.user_id,
+                text=(
+                    f"Заявка {result.ticket.ticket_id} снова открыта.\n\n"
+                    "Работа по заявке продолжается."
+                ),
+                attachments=[build_close_notification_menu_keyboard()],
+                text_format=None,
+            )
+            if not delivered:
+                logger.warning("Reopen user notification failed: ticket_id=%s", result.ticket.ticket_id)
+                await observability.ticket_event(
+                    ticket_id=result.ticket.ticket_id,
+                    event_type="ticket_reopen_notification_failed",
+                    actor_user_id=actor_id,
+                    actor_name=actor_name,
+                    actor_role="IT specialist",
+                    source="callback",
+                )
+            return
+
         if action == "take" and not can_take_ticket(
             user_id=actor_id,
             admin_ids=admin_ids,
@@ -2151,7 +2375,14 @@ def register(dp) -> None:
             )
             return
 
-        if action in {"release", "close", "clarify", "close_with_reply", "comment", "note"}:
+        if action == "comment":
+            await max_messages.answer_callback(
+                event=event,
+                notification="Функция временно недоступна.",
+            )
+            return
+
+        if action in {"release", "close", "clarify", "close_with_reply", "note"}:
             ticket = await tickets.get_ticket(ticket_id)
             if ticket is None:
                 await max_messages.answer_callback(

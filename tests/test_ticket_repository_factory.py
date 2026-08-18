@@ -19,6 +19,7 @@ from config.config import (
     NetworkToolsFeaturesConfig,
     ObservabilityConfig,
     TicketStorageConfig,
+    TLSReminderConfig,
     WifiLinkConfig,
 )
 
@@ -94,6 +95,15 @@ def _config(schema_mode: str) -> AppConfig:
             collection_window_sec=15,
             max_attachments_per_item=10,
             max_file_size_mb=50,
+        ),
+        tls_reminder=TLSReminderConfig(
+            enabled=True,
+            host="max.myservicedomain.ru",
+            port=443,
+            reminder_days=5,
+            interval_sec=86400,
+            timeout_sec=10,
+            server_hint="192.168.1.177",
         ),
     )
 

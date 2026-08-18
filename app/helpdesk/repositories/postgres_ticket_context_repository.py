@@ -253,6 +253,79 @@ class PostgresTicketContextRepository:
             return None
         return self._comment_from_row(row, ticket_id=str(row["ticket_key"]))
 
+    def get_comment(self, comment_id: int) -> TicketCommentRecord | None:
+        """Возвращает комментарий по первичному ключу."""
+
+        with self._lock, self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT c.*, t.ticket_key
+                    FROM helpdesk.ticket_comments c
+                    JOIN helpdesk.tickets t ON t.id = c.ticket_id
+                    WHERE c.id = %s
+                    """,
+                    (comment_id,),
+                )
+                row = cur.fetchone()
+        if row is None:
+            return None
+        return self._comment_from_row(row, ticket_id=str(row["ticket_key"]))
+
+    def bind_comment_target_message(
+        self,
+        comment_id: int,
+        target_message_id: str,
+    ) -> TicketCommentRecord | None:
+        """Привязывает комментарий к отдельному сообщению в группе."""
+
+        with self._lock, self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE helpdesk.ticket_comments c
+                    SET target_message_id = %s
+                    FROM helpdesk.tickets t
+                    WHERE c.id = %s AND c.ticket_id = t.id
+                    RETURNING c.*, t.ticket_key
+                    """,
+                    (str(target_message_id), comment_id),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        if row is None:
+            return None
+        return self._comment_from_row(row, ticket_id=str(row["ticket_key"]))
+
+    def mark_comment_attached(
+        self,
+        comment_id: int,
+        *,
+        direction: str,
+    ) -> TicketCommentRecord | None:
+        """Идемпотентно помечает комментарий как прикреплённый к карточке."""
+
+        with self._lock, self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE helpdesk.ticket_comments c
+                    SET meta = COALESCE(c.meta, '{}'::jsonb)
+                        || '{"attached_to_card": true}'::jsonb
+                    FROM helpdesk.tickets t
+                    WHERE c.id = %s
+                      AND c.ticket_id = t.id
+                      AND c.direction = %s
+                    RETURNING c.*, t.ticket_key
+                    """,
+                    (comment_id, direction),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        if row is None:
+            return None
+        return self._comment_from_row(row, ticket_id=str(row["ticket_key"]))
+
     def _comment_from_row(self, row: dict[str, Any], *, ticket_id: str) -> TicketCommentRecord:
         return TicketCommentRecord(
             id=int(row["id"]),

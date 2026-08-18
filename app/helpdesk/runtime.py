@@ -22,6 +22,8 @@ from app.helpdesk.services.room_history_service import RoomHistoryService
 from app.helpdesk.services.ticket_link_service import TicketLinkService
 from app.helpdesk.services.ticket_lifecycle_service import TicketLifecycleService
 from app.helpdesk.services.user_reply_session_service import UserReplySessionService
+from app.helpdesk.services.user_addition_session_service import UserAdditionSessionService
+from app.helpdesk.services.ticket_user_addition_service import TicketUserAdditionService
 from app.helpdesk.services.user_flow_service import UserFlowService
 from app.observability.runtime import get_observability_service
 from config.config import get_config
@@ -40,6 +42,8 @@ _media_attachment_service: MediaAttachmentService | None = None
 _media_collection_session_service: MediaCollectionSessionService | None = None
 _ticket_clarification_service: TicketClarificationService | None = None
 _user_reply_session_service: UserReplySessionService | None = None
+_user_addition_session_service: UserAdditionSessionService | None = None
+_ticket_user_addition_service: TicketUserAdditionService | None = None
 _room_ticket_context_service = None
 _room_history_service: RoomHistoryService | None = None
 
@@ -338,6 +342,40 @@ def get_user_reply_session_service() -> UserReplySessionService:
     if _user_reply_session_service is None:
         _user_reply_session_service = UserReplySessionService()
     return _user_reply_session_service
+
+
+def get_user_addition_session_service() -> UserAdditionSessionService:
+    """Возвращает singleton сессий пользовательского дополнения."""
+
+    global _user_addition_session_service
+    if _user_addition_session_service is None:
+        _user_addition_session_service = UserAdditionSessionService()
+    return _user_addition_session_service
+
+
+def get_ticket_user_addition_service() -> TicketUserAdditionService:
+    """Возвращает сервис пользовательских дополнений к заявкам."""
+
+    global _ticket_user_addition_service
+    if _ticket_user_addition_service is None:
+        cfg = get_config()
+        repository = None
+        if cfg.tickets.backend == "postgres":
+            from app.helpdesk.repositories.postgres_ticket_context_repository import (
+                PostgresTicketContextRepository,
+            )
+
+            repository = PostgresTicketContextRepository(
+                host=cfg.tickets.postgres_host,
+                port=cfg.tickets.postgres_port,
+                database=cfg.tickets.postgres_db,
+                user=cfg.tickets.postgres_user,
+                password=cfg.tickets.postgres_password,
+                sslmode=cfg.tickets.postgres_sslmode,
+                connect_timeout_sec=cfg.tickets.postgres_connect_timeout_sec,
+            )
+        _ticket_user_addition_service = TicketUserAdditionService(repository)
+    return _ticket_user_addition_service
 
 
 def get_room_ticket_context_service():

@@ -9,6 +9,7 @@ from app.helpdesk.services.ticket_internal_comment_service import (
 from app.helpdesk.services.ticket_card_update_service import TicketCardUpdateService
 from app.helpdesk.services.ticket_clarification_service import TicketClarificationService
 from app.helpdesk.services.ticket_link_service import TicketLinkService
+from app.helpdesk.services.ticket_user_addition_service import TicketUserAdditionService
 
 
 class FakeMaxMessages:
@@ -101,6 +102,95 @@ class TicketCardUpdateServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(max_messages.send_calls, [])
         self.assertEqual(links.get_group_message_id("T-00001"), "root-mid")
 
+    async def test_group_update_synchronizes_existing_personal_card(self) -> None:
+        links = TicketLinkService()
+        links.bind_group_message("T-00001", "group-card-mid", primary=True)
+        links.bind_user_message("T-00001", "user-card-mid")
+        max_messages = FakeMaxMessages(edit_result=True)
+        service = TicketCardUpdateService(
+            ticket_links=links,
+            group_chat_id=-100,
+            max_messages=max_messages,
+        )
+        ticket = Ticket(
+            id="T-00001",
+            user_id=101,
+            category="Доступ",
+            text="Test",
+            status=TicketStatus.IN_PROGRESS,
+        )
+
+        updated = await service.update_group_ticket_card(bot=object(), ticket=ticket)
+
+        self.assertTrue(updated)
+        self.assertEqual(
+            [call["message_id"] for call in max_messages.edit_calls],
+            ["group-card-mid", "user-card-mid"],
+        )
+        self.assertIn("Статус: <b>в работе</b>", max_messages.edit_calls[1]["text"])
+
+    async def test_updates_card_with_latest_attached_user_addition(self) -> None:
+        links = TicketLinkService()
+        links.bind_group_message("T-00001", "root-mid", primary=True)
+        additions = TicketUserAdditionService()
+        item = additions.save(
+            ticket_id="T-00001",
+            user_id=101,
+            user_name="User",
+            text="Добавил сведения",
+            attachments=["addition-photo"],
+        )
+        additions.attach(item.comment_id)
+        max_messages = FakeMaxMessages(edit_result=True)
+        service = TicketCardUpdateService(
+            ticket_links=links,
+            group_chat_id=-100,
+            max_messages=max_messages,
+            user_additions=additions,
+        )
+        ticket = Ticket(id="T-00001", user_id=101, category="VPN", text="Test")
+
+        updated = await service.update_group_ticket_card(bot=object(), ticket=ticket)
+
+        self.assertTrue(updated)
+        call = max_messages.edit_calls[0]
+        self.assertIn("Последнее дополнение пользователя:", call["text"])
+        self.assertIn("Добавил сведения", call["text"])
+        self.assertEqual(call["attachments"][0], "addition-photo")
+
+    async def test_updates_personal_card_with_new_user_addition(self) -> None:
+        links = TicketLinkService()
+        links.bind_user_message("T-00001", "user-card-mid")
+        additions = TicketUserAdditionService()
+        addition = additions.save(
+            ticket_id="T-00001",
+            user_id=101,
+            user_name="User",
+            text="Добавил сведения",
+            attachments=["addition-photo"],
+        )
+        max_messages = FakeMaxMessages(edit_result=True)
+        service = TicketCardUpdateService(
+            ticket_links=links,
+            group_chat_id=-100,
+            max_messages=max_messages,
+        )
+        ticket = Ticket(id="T-00001", user_id=101, category="VPN", text="Test")
+
+        updated = await service.update_user_ticket_card(
+            bot=object(),
+            ticket=ticket,
+            last_user_addition=addition,
+        )
+
+        self.assertTrue(updated)
+        call = max_messages.edit_calls[0]
+        self.assertEqual(call["message_id"], "user-card-mid")
+        self.assertIn("Последнее дополнение:", call["text"])
+        self.assertIn("Добавил сведения", call["text"])
+        self.assertEqual(call["attachments"][0], "addition-photo")
+        self.assertEqual(call["attachments"][-1].payload.buttons[0][0].text, "➕ Дополнить заявку")
+
     async def test_sends_reply_fallback_and_rebinds_primary_when_edit_fails(self) -> None:
         links = TicketLinkService()
         links.bind_group_message("T-00002", "root-mid", primary=True)
@@ -175,7 +265,7 @@ class TicketCardUpdateServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["attachments"][0].payload.buttons[0][0].text, "Освободить")
         self.assertEqual(
             [button.text for button in call["attachments"][0].payload.buttons[-2]],
-            ["История номера"],
+            ["Заметка", "История номера"],
         )
         self.assertEqual(links.get_group_message_id("T-00004"), "callback-mid")
 

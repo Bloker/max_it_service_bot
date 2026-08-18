@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.bot import bot as bot_module
-from config.config import BotConfig
+from config.config import BotConfig, TLSReminderConfig
 
 
 def _cfg(update_mode: str) -> SimpleNamespace:
@@ -29,7 +29,16 @@ def _cfg(update_mode: str) -> SimpleNamespace:
             webhook_path="/max-webhook",
             webhook_health_path="/health",
             webhook_secret="secret",
-        )
+        ),
+        tls_reminder=TLSReminderConfig(
+            enabled=False,
+            host="max.myservicedomain.ru",
+            port=443,
+            reminder_days=5,
+            interval_sec=86400,
+            timeout_sec=10,
+            server_hint="",
+        ),
     )
 
 

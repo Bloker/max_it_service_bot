@@ -169,7 +169,13 @@ class PostgresTicketLinkService:
                 row = cur.fetchone()
         return str(row["ticket_key"]) if row else None
 
-    def bind_user_message(self, ticket_id: str, user_message_id: str) -> None:
+    def bind_user_message(
+        self,
+        ticket_id: str,
+        user_message_id: str,
+        *,
+        primary: bool = False,
+    ) -> None:
         self._ensure_initialized()
         normalized_mid = str(user_message_id)
         with self._lock, self._connect() as conn:
@@ -178,19 +184,28 @@ class PostgresTicketLinkService:
                 if ticket_pk is None:
                     conn.commit()
                     return
+                if primary:
+                    cur.execute(
+                        """
+                        UPDATE integration.message_links
+                        SET is_primary = FALSE
+                        WHERE ticket_id = %s AND direction = 'user'
+                        """,
+                        (ticket_pk,),
+                    )
                 cur.execute(
                     """
                     INSERT INTO integration.message_links(
                         ticket_id, platform, chat_id, message_id, direction, is_primary
                     )
-                    VALUES (%s, 'max', 'dialog', %s, 'user', FALSE)
+                    VALUES (%s, 'max', 'dialog', %s, 'user', %s)
                     ON CONFLICT (platform, chat_id, message_id) DO UPDATE
                     SET
                         ticket_id = EXCLUDED.ticket_id,
                         direction = EXCLUDED.direction,
                         linked_at = NOW()
                     """,
-                    (ticket_pk, normalized_mid),
+                    (ticket_pk, normalized_mid, primary),
                 )
             conn.commit()
 
@@ -214,3 +229,25 @@ class PostgresTicketLinkService:
                 )
                 row = cur.fetchone()
         return str(row["ticket_key"]) if row else None
+
+    def get_user_message_id(self, ticket_id: str) -> str | None:
+        """Возвращает последнюю пользовательскую карточку заявки."""
+
+        self._ensure_initialized()
+        with self._lock, self._connect() as conn:
+            with conn.cursor() as cur:
+                ticket_pk = self._resolve_ticket_pk(cur, ticket_id)
+                if ticket_pk is None:
+                    return None
+                cur.execute(
+                    """
+                    SELECT message_id
+                    FROM integration.message_links
+                    WHERE ticket_id = %s AND direction = 'user'
+                    ORDER BY is_primary DESC, linked_at ASC
+                    LIMIT 1
+                    """,
+                    (ticket_pk,),
+                )
+                row = cur.fetchone()
+        return str(row["message_id"]) if row else None

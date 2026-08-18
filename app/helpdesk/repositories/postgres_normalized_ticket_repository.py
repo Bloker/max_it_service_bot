@@ -214,6 +214,40 @@ class PostgresNormalizedTicketRepository:
             return TicketActionResult(ok=False, reason="not_found")
         return TicketActionResult(ok=True, reason="status_updated", ticket=self._row_to_ticket(updated))
 
+    async def reopen(self, ticket_id: str) -> TicketActionResult:
+        """Атомарно повторно открывает нормализованную заявку."""
+
+        return await asyncio.to_thread(self._reopen_sync, ticket_id)
+
+    def _reopen_sync(self, ticket_id: str) -> TicketActionResult:
+        now = datetime.now(tz=timezone.utc)
+        with session_scope(self._session_factory) as session:
+            row = self._select_ticket_row(session, ticket_id, for_update=True)
+            if row is None:
+                return TicketActionResult(ok=False, reason="not_found")
+            ticket = self._row_to_ticket(row)
+            if ticket.status != TicketStatus.CLOSED:
+                return TicketActionResult(ok=False, reason="already_open", ticket=ticket)
+            status = TicketStatus.IN_PROGRESS if ticket.assigned_to else TicketStatus.NEW
+            session.execute(
+                text(
+                    """
+                    UPDATE helpdesk.tickets
+                    SET status_code = :status_code,
+                        updated_at = :updated_at,
+                        closed_at = NULL
+                    WHERE ticket_key = :ticket_key
+                    """
+                ),
+                {
+                    "status_code": _STATUS_TO_CODE[status],
+                    "updated_at": now,
+                    "ticket_key": ticket_id,
+                },
+            )
+            updated = self._select_ticket_row(session, ticket_id, for_update=False)
+        return TicketActionResult(ok=True, reason="reopened", ticket=self._row_to_ticket(updated))
+
     async def assign(
         self,
         ticket_id: str,

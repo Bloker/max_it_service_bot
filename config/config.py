@@ -144,6 +144,19 @@ class MediaConfig:
 
 
 @dataclass(frozen=True)
+class TLSReminderConfig:
+    """Настройки фонового напоминания об окончании TLS-сертификата."""
+
+    enabled: bool
+    host: str
+    port: int
+    reminder_days: int
+    interval_sec: int
+    timeout_sec: int
+    server_hint: str
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Полная конфигурация приложения."""
 
@@ -156,6 +169,7 @@ class AppConfig:
     netarium: NetariumConfig
     observability: ObservabilityConfig
     media: MediaConfig
+    tls_reminder: TLSReminderConfig
 
 
 def _load_environment() -> None:
@@ -506,6 +520,33 @@ def get_config() -> AppConfig:
     if media_max_file_size_mb <= 0:
         raise RuntimeError("MAX_MEDIA_MAX_FILE_SIZE_MB must be > 0")
 
+    tls_reminder_enabled = _parse_bool_env("MAX_TLS_REMINDER_ENABLED", True)
+    tls_reminder_host = os.getenv(
+        "MAX_TLS_REMINDER_HOST",
+        "max.myservicedomain.ru",
+    ).strip()
+    tls_reminder_port = _parse_int_env("MAX_TLS_REMINDER_PORT", 443)
+    tls_reminder_days = _parse_int_env("MAX_TLS_REMINDER_DAYS", 5)
+    tls_reminder_interval_sec = _parse_int_env(
+        "MAX_TLS_REMINDER_INTERVAL_SEC",
+        86400,
+    )
+    tls_reminder_timeout_sec = _parse_int_env("MAX_TLS_REMINDER_TIMEOUT_SEC", 10)
+    tls_reminder_server_hint = os.getenv(
+        "MAX_TLS_REMINDER_SERVER_HINT",
+        "192.168.1.177",
+    ).strip()
+    if not tls_reminder_host:
+        raise RuntimeError("MAX_TLS_REMINDER_HOST must not be empty")
+    if not (1 <= tls_reminder_port <= 65535):
+        raise RuntimeError("MAX_TLS_REMINDER_PORT must be between 1 and 65535")
+    if tls_reminder_days < 0:
+        raise RuntimeError("MAX_TLS_REMINDER_DAYS must be >= 0")
+    if tls_reminder_interval_sec < 86400:
+        raise RuntimeError("MAX_TLS_REMINDER_INTERVAL_SEC must be >= 86400")
+    if tls_reminder_timeout_sec <= 0:
+        raise RuntimeError("MAX_TLS_REMINDER_TIMEOUT_SEC must be > 0")
+
     return AppConfig(
         bot=BotConfig(
             token=token,
@@ -571,6 +612,15 @@ def get_config() -> AppConfig:
             collection_window_sec=media_collection_window_sec,
             max_attachments_per_item=media_max_attachments_per_item,
             max_file_size_mb=media_max_file_size_mb,
+        ),
+        tls_reminder=TLSReminderConfig(
+            enabled=tls_reminder_enabled,
+            host=tls_reminder_host,
+            port=tls_reminder_port,
+            reminder_days=tls_reminder_days,
+            interval_sec=tls_reminder_interval_sec,
+            timeout_sec=tls_reminder_timeout_sec,
+            server_hint=tls_reminder_server_hint,
         ),
     )
 

@@ -61,6 +61,46 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.max_api.jitter_sec, 0.25)
         self.assertEqual(cfg.max_api.server_error_attempts, 2)
         self.assertEqual(cfg.max_api.edit_min_interval_sec, 1.0)
+        self.assertTrue(cfg.tls_reminder.enabled)
+        self.assertEqual(cfg.tls_reminder.host, "max.myservicedomain.ru")
+        self.assertEqual(cfg.tls_reminder.port, 443)
+        self.assertEqual(cfg.tls_reminder.reminder_days, 5)
+        self.assertEqual(cfg.tls_reminder.interval_sec, 86400)
+        self.assertEqual(cfg.tls_reminder.timeout_sec, 10)
+        self.assertEqual(cfg.tls_reminder.server_hint, "192.168.1.177")
+
+    def test_tls_reminder_custom_config_parsed(self) -> None:
+        env = {
+            "MAX_BOT_TOKEN": "test-token",
+            "MAX_GROUP_CHAT_ID": "123",
+            "MAX_TLS_REMINDER_ENABLED": "false",
+            "MAX_TLS_REMINDER_HOST": "tls.example.test",
+            "MAX_TLS_REMINDER_PORT": "8443",
+            "MAX_TLS_REMINDER_DAYS": "7",
+            "MAX_TLS_REMINDER_INTERVAL_SEC": "172800",
+            "MAX_TLS_REMINDER_TIMEOUT_SEC": "3",
+            "MAX_TLS_REMINDER_SERVER_HINT": "",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            cfg = get_config()
+
+        self.assertFalse(cfg.tls_reminder.enabled)
+        self.assertEqual(cfg.tls_reminder.host, "tls.example.test")
+        self.assertEqual(cfg.tls_reminder.port, 8443)
+        self.assertEqual(cfg.tls_reminder.reminder_days, 7)
+        self.assertEqual(cfg.tls_reminder.interval_sec, 172800)
+        self.assertEqual(cfg.tls_reminder.timeout_sec, 3)
+        self.assertEqual(cfg.tls_reminder.server_hint, "")
+
+    def test_tls_reminder_rejects_interval_below_one_day(self) -> None:
+        env = {
+            "MAX_BOT_TOKEN": "test-token",
+            "MAX_GROUP_CHAT_ID": "123",
+            "MAX_TLS_REMINDER_INTERVAL_SEC": "3600",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with self.assertRaises(RuntimeError):
+                get_config()
 
     def test_max_api_retry_custom_config_parsed(self) -> None:
         env = {

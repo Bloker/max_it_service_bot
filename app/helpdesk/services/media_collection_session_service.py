@@ -12,6 +12,7 @@ from uuid import uuid4
 STATE_TICKET_COMMENT = "collecting_ticket_comment"
 STATE_KNOWLEDGE_ARTICLE = "collecting_knowledge_article"
 STATE_CLOSE_REPLY = "collecting_close_reply"
+STATE_USER_ADDITION = "collecting_user_addition"
 
 
 @dataclass(slots=True)

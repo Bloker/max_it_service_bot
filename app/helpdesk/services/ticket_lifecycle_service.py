@@ -94,6 +94,48 @@ class TicketLifecycleService:
     async def list_open_tickets(self, limit: int = 50) -> list[Ticket]:
         return await self.repository.list_open(limit=limit)
 
+    async def reopen_ticket(
+        self,
+        ticket_id: str,
+        *,
+        actor_user_id: int,
+        actor_name: str,
+    ) -> TicketActionResult:
+        """Повторно открывает заявку и пишет одно доменное событие."""
+
+        result = await self.repository.reopen(ticket_id=ticket_id)
+        if not result.ok:
+            await self._audit(
+                action="ticket_reopened",
+                resource_id=ticket_id,
+                result="failed",
+                actor_user_id=actor_user_id,
+                actor_role="IT specialist",
+                reason=result.reason,
+            )
+            return result
+        ticket = result.ticket
+        logger.info("Ticket reopened: ticket_id=%s actor_id=%s", ticket_id, actor_user_id)
+        await self._ticket_event(
+            ticket_id=ticket_id,
+            event_type="ticket_reopened",
+            actor_user_id=actor_user_id,
+            actor_name=actor_name,
+            actor_role="IT specialist",
+            old_status="closed",
+            new_status=_status_code(ticket.status) if ticket else None,
+            source="callback",
+            metadata={"assignee_preserved": bool(ticket and ticket.assigned_to)},
+        )
+        await self._audit(
+            action="ticket_reopened",
+            resource_id=ticket_id,
+            result="success",
+            actor_user_id=actor_user_id,
+            actor_role="IT specialist",
+        )
+        return result
+
     async def set_ticket_status(self, ticket_id: str, status: str) -> TicketActionResult:
         """Меняет статус заявки через репозиторий."""
 

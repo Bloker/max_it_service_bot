@@ -1,6 +1,10 @@
 """Пользовательские тексты и форматирование сообщений HelpDesk."""
 
+from html import escape
+
+from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.models.ticket import Ticket, TicketStatus
+from app.helpdesk.texts.formatters import format_room_context_object
 
 
 WELCOME_TEXT = (
@@ -114,3 +118,35 @@ def status_human(status: TicketStatus) -> str:
     """Возвращает человекочитаемый статус заявки."""
 
     return status.value
+
+
+def render_user_ticket(
+    ticket: Ticket,
+    *,
+    room_context: RoomTicketContext | None = None,
+    last_user_addition=None,
+) -> str:
+    """Форматирует карточку собственной заявки пользователя."""
+
+    context_line = f"Категория: {escape(ticket.category)}"
+    if room_context is not None:
+        context_line = "Объект: " + escape(
+            format_room_context_object(
+                room_number_snapshot=room_context.room_number_snapshot,
+                location_display_snapshot=room_context.location_display_snapshot,
+                category_snapshot=room_context.category_snapshot or ticket.category,
+            )
+        )
+    card = (
+        f"<b>Заявка {escape(ticket.ticket_id)}</b>\n"
+        f"Статус: <b>{escape(ticket.status.value)}</b>\n"
+        f"{context_line}\n\n"
+        "<b>Описание:</b>\n"
+        f"{escape(ticket.text)}"
+    )
+    if last_user_addition is not None:
+        card += (
+            "\n\n<b>Последнее дополнение:</b>\n"
+            f"{escape(last_user_addition.card_text)}"
+        )
+    return card

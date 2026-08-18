@@ -19,13 +19,14 @@ from app.admin.services.access_service import (
     can_view_user_menu,
     is_admin,
 )
-from app.bot.notifications import notify_user_ticket_closed
+from app.bot.notifications import notify_user_ticket_closed, notify_user_ticket_submitted
 from app.bot.services.max_message_service import MaxMessageService
 from app.bot.services.media_forward_service import MediaForwardService
 from app.common.user_helpers import get_first_name, get_full_name
 from app.helpdesk.keyboards.helpdesk_keyboards import (
     build_admin_request_keyboard,
     build_attach_user_reply_keyboard,
+    build_attach_user_addition_keyboard,
     build_clarification_cancel_keyboard,
     build_clarification_reply_keyboard,
     build_close_notification_menu_keyboard,
@@ -63,6 +64,8 @@ from app.helpdesk.runtime import (
     get_ticket_clarification_service,
     get_ticket_link_service,
     get_ticket_service,
+    get_ticket_user_addition_service,
+    get_user_addition_session_service,
     get_user_reply_session_service,
     get_user_flow_service,
 )
@@ -75,6 +78,7 @@ from app.helpdesk.services.attachment_filter_service import (
 from app.helpdesk.services.ticket_clarification_service import (
     MAX_CLARIFICATION_MESSAGE_LENGTH,
 )
+from app.helpdesk.services.media_collection_session_service import STATE_USER_ADDITION
 from app.helpdesk.services.ticket_service import (
     get_optional_contact_details,
     get_sender_identity,
@@ -366,6 +370,8 @@ def register(dp) -> None:
     media_collection_sessions = get_media_collection_session_service()
     ticket_clarifications = get_ticket_clarification_service()
     user_reply_sessions = get_user_reply_session_service()
+    user_addition_sessions = get_user_addition_session_service()
+    user_additions = get_ticket_user_addition_service()
     room_ticket_contexts = get_room_ticket_context_service()
     observability = get_observability_service()
     max_messages = MaxMessageService(observability=observability, retry_config=cfg.max_api)
@@ -376,6 +382,7 @@ def register(dp) -> None:
         max_messages=max_messages,
         clarifications=ticket_clarifications,
         internal_comments=internal_comments,
+        user_additions=user_additions,
         room_contexts=room_ticket_contexts,
         observability=get_observability_service(),
     )
@@ -545,6 +552,147 @@ def register(dp) -> None:
         if session.state == "collecting_close_reply":
             await _finalize_close_reply_collection(session)
             return
+        if session.state == STATE_USER_ADDITION:
+            await _finalize_user_addition_collection(session)
+            return
+
+    async def _finalize_user_addition_collection(session) -> None:
+        """Сохраняет дополнение и отправляет его отдельным сообщением в IT-группу."""
+
+        ticket = await tickets.get_ticket(session.ticket_key or "")
+        if ticket is None or ticket.user_id != session.actor_user_id:
+            return
+        if ticket.status == TicketStatus.CLOSED:
+            await max_messages.send_message(
+                bot=dp.bot,
+                user_id=session.actor_user_id,
+                text="Заявка уже закрыта, дополнение не отправлено.",
+                text_format=None,
+            )
+            return
+        body = session.body_text or "Без текста"
+        user_name, _ = _get_registered_user_profile(session.actor_user_id)
+        try:
+            addition = user_additions.save(
+                ticket_id=ticket.ticket_id,
+                user_id=session.actor_user_id,
+                user_name=user_name,
+                text=body,
+                attachments=session.pending_media,
+                source_message_id=(
+                    session.transient_message_ids[0]
+                    if session.transient_message_ids else None
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to save user addition: ticket_id=%s user_id=%s",
+                ticket.ticket_id,
+                session.actor_user_id,
+            )
+            await max_messages.send_message(
+                bot=dp.bot,
+                user_id=session.actor_user_id,
+                text="Не удалось отправить дополнение. Попробуйте ещё раз.",
+                text_format=None,
+            )
+            return
+        room_context = (
+            room_ticket_contexts.get_context(ticket.ticket_id)
+            if room_ticket_contexts is not None else None
+        )
+        group_mid = await max_messages.send_message(
+            bot=dp.bot,
+            chat_id=group_chat_id,
+            text=specialist_texts.render_user_addition_group_message(
+                ticket,
+                addition,
+                room_context=room_context,
+            ),
+            attachments=[
+                *session.pending_media,
+                build_attach_user_addition_keyboard(ticket.ticket_id, addition.comment_id),
+            ],
+            reply_to_message_id=ticket_links.get_group_message_id(ticket.ticket_id),
+            text_format=ParseMode.HTML,
+        )
+        if group_mid:
+            user_additions.bind_group_message(addition.comment_id, group_mid)
+        else:
+            logger.error(
+                "User addition saved but group delivery failed: ticket_id=%s comment_id=%s",
+                ticket.ticket_id,
+                addition.comment_id,
+            )
+        await observability.ticket_event(
+            ticket_id=ticket.ticket_id,
+            event_type="user_addition_created",
+            actor_user_id=session.actor_user_id,
+            actor_name=user_name,
+            actor_role="user",
+            source="user_message",
+            related_message_id=group_mid,
+            metadata={
+                "attachments_count": len(session.pending_media),
+                "group_delivered": bool(group_mid),
+            },
+        )
+        user_card_updated = await ticket_card_updates.update_user_ticket_card(
+            bot=dp.bot,
+            ticket=ticket,
+            last_user_addition=addition,
+            create_if_missing=True,
+        )
+        if not user_card_updated:
+            logger.error("Failed to update user ticket card: ticket_id=%s", ticket.ticket_id)
+            return
+
+        if session.prompt_message_id:
+            await max_messages.delete_message(bot=dp.bot, message_id=session.prompt_message_id)
+
+    async def _start_user_addition_collection(
+        event: MessageCreated,
+        *,
+        user_id: int,
+        text: str,
+        attachments: list[Any],
+    ) -> bool:
+        """Открывает 15-секундное окно сбора дополнения пользователя."""
+
+        session = user_addition_sessions.get(user_id)
+        if session is None or is_command_text(text):
+            return False
+        ticket = await tickets.get_ticket(session.ticket_id)
+        if ticket is None or ticket.user_id != user_id:
+            user_addition_sessions.reset(user_id)
+            await event.message.answer("Заявка не найдена.")
+            return True
+        collected = media_attachments.collect_supported(0, attachments)
+        if not text.strip() and not collected.accepted:
+            await event.message.answer("Отправьте текст, фото, видео или файл.")
+            return True
+        incoming_message_id = _extract_incoming_message_id(event)
+        media_collection_sessions.start(
+            actor_user_id=user_id,
+            chat_id=int(event.message.recipient.chat_id),
+            state=STATE_USER_ADDITION,
+            ticket_key=ticket.ticket_id,
+            prompt_message_id=session.prompt_message_id,
+            source_kind="user_addition",
+            transient_message_ids=[incoming_message_id] if incoming_message_id else None,
+        )
+        media_collection_sessions.append(
+            user_id,
+            text=text,
+            media=collected.accepted,
+            warnings=collected.rejected_messages,
+            transient_message_ids=[incoming_message_id] if incoming_message_id else None,
+        )
+        user_addition_sessions.reset(user_id)
+        _schedule_media_collection_finalize(user_id)
+        for warning in collected.rejected_messages:
+            await event.message.answer(warning)
+        return True
 
     async def _finalize_internal_comment_collection(session) -> None:
         """Финализирует внутренний комментарий и его media-вложения."""
@@ -1259,23 +1407,18 @@ def register(dp) -> None:
             )
 
         user_flow.reset(sender_id)
-        confirmation_mid = await max_messages.send_message(
+        user_message_id = await notify_user_ticket_submitted(
             bot=bot,
-            user_id=sender_id,
-            text=user_texts.SUBMITTED_TEXT,
-            text_format=None,
+            max_messages=max_messages,
+            ticket=ticket,
+            media_attachments=media_attachments,
+            room_context=room_context,
         )
-        menu_sent = await bot.send_message(
-            user_id=sender_id,
-            text=user_texts.WELCOME_TEXT,
-            attachments=[_build_menu_for_user_with_registry(sender_id, cfg, access_registry)],
-        )
-        menu_mid = _extract_message_id(menu_sent)
-        user_message_id = confirmation_mid or menu_mid
         if user_message_id:
             ticket_links.bind_user_message(
                 ticket_id=ticket.ticket_id,
                 user_message_id=user_message_id,
+                primary=True,
             )
         return True
 
@@ -2492,7 +2635,16 @@ def register(dp) -> None:
                     limit,
                     len(open_tickets),
                 )
-                attachments = [build_open_tickets_keyboard(open_tickets)] if open_tickets else None
+                group_message_ids = {
+                    ticket.ticket_id: ticket_links.get_group_message_id(ticket.ticket_id)
+                    for ticket in open_tickets
+                }
+                attachments = [
+                    build_open_tickets_keyboard(
+                        open_tickets,
+                        ticket_message_ids=group_message_ids,
+                    )
+                ] if open_tickets else None
                 await event.message.answer(
                     specialist_texts.render_open_tickets_list(
                         open_tickets,
@@ -2742,6 +2894,10 @@ def register(dp) -> None:
             user_flow.reset(sender_id)
             network_session.reset(sender_id)
             user_reply_sessions.reset(sender_id)
+            user_addition_sessions.reset(sender_id)
+            active_media = media_collection_sessions.get(sender_id)
+            if active_media and active_media.state == STATE_USER_ADDITION:
+                media_collection_sessions.cancel(sender_id)
             knowledge_article_sessions.reset(sender_id)
             await event.message.answer(
                 text=user_texts.WELCOME_TEXT,
@@ -2761,6 +2917,15 @@ def register(dp) -> None:
             attachments=message_attachments,
         )
         if media_collected:
+            return
+
+        addition_collected = await _start_user_addition_collection(
+            event,
+            user_id=sender_id,
+            text=text,
+            attachments=draft_message_attachments,
+        )
+        if addition_collected:
             return
 
         kb_session = knowledge_article_sessions.get(sender_id)

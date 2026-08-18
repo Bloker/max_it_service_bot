@@ -63,6 +63,11 @@ class ShadowReadTicketRepository:
         await self._compare_ticket(ticket_id, primary_ticket=result.ticket)
         return result
 
+    async def reopen(self, ticket_id: str) -> TicketActionResult:
+        result = await self._primary.reopen(ticket_id=ticket_id)
+        await self._compare_ticket(ticket_id, primary_ticket=result.ticket)
+        return result
+
     async def assign(
         self,
         ticket_id: str,

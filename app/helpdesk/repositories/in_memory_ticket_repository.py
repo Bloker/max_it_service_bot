@@ -80,6 +80,21 @@ class InMemoryTicketRepository:
             ticket.updated_at = datetime.now(tz=timezone.utc)
             return TicketActionResult(ok=True, reason="status_updated", ticket=ticket)
 
+    async def reopen(self, ticket_id: str) -> TicketActionResult:
+        """Повторно открывает закрытую заявку, сохраняя исполнителя."""
+
+        async with self._lock:
+            ticket = self._tickets_by_id.get(ticket_id)
+            if ticket is None:
+                return TicketActionResult(ok=False, reason="not_found")
+            if ticket.status != TicketStatus.CLOSED:
+                return TicketActionResult(ok=False, reason="already_open", ticket=ticket)
+            ticket.status = (
+                TicketStatus.IN_PROGRESS if ticket.assigned_to else TicketStatus.NEW
+            )
+            ticket.updated_at = datetime.now(tz=timezone.utc)
+            return TicketActionResult(ok=True, reason="reopened", ticket=ticket)
+
     async def assign(
         self,
         ticket_id: str,

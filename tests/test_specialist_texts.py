@@ -6,10 +6,12 @@ from app.helpdesk.models.room_ticket_context import RoomTicketContext
 from app.helpdesk.models.ticket import Ticket, TicketStatus
 from app.helpdesk.services.ticket_internal_comment_service import TicketInternalComment
 from app.helpdesk.services.ticket_clarification_service import TicketClarificationService
+from app.helpdesk.services.ticket_user_addition_service import TicketUserAdditionService
 from app.helpdesk.texts.specialist_texts import (
     render_group_ticket,
     render_internal_comment_prompt,
     render_open_tickets_list,
+    render_user_addition_group_message,
 )
 from app.helpdesk.texts.user_texts import (
     render_ticket_closed_notification,
@@ -240,6 +242,47 @@ class SpecialistTextsTests(unittest.TestCase):
         self.assertIn("Проверен uplink &amp; перезапущен access point", text)
         self.assertNotIn("Источник:", text)
         self.assertNotIn("Статус:", text.split("Внутренний комментарий:", 1)[1])
+
+    def test_render_group_ticket_includes_only_attached_user_addition(self) -> None:
+        ticket = Ticket(id="T-00031", user_id=101, category="VPN", text="Нет связи")
+        service = TicketUserAdditionService()
+        addition = service.save(
+            ticket_id=ticket.ticket_id,
+            user_id=101,
+            user_name="User",
+            text="Ошибка <новая> & повторяется",
+        )
+
+        without_attachment = render_group_ticket(ticket, last_user_addition=None)
+        attached = service.attach(addition.comment_id)
+        with_attachment = render_group_ticket(ticket, last_user_addition=attached)
+
+        self.assertNotIn("Последнее дополнение пользователя:", without_attachment)
+        self.assertIn("Последнее дополнение пользователя:", with_attachment)
+        self.assertIn("Ошибка &lt;новая&gt; &amp; повторяется", with_attachment)
+
+    def test_render_user_addition_group_message_includes_status_and_room(self) -> None:
+        ticket = Ticket(id="T-00032", user_id=101, category="Интернет", text="Нет сети")
+        addition = TicketUserAdditionService().save(
+            ticket_id=ticket.ticket_id,
+            user_id=101,
+            user_name="Иван",
+            text="Только вечером",
+        )
+        context = RoomTicketContext(
+            ticket_key=ticket.ticket_id,
+            hotel_id=1,
+            location_id=112,
+            room_number_snapshot="112",
+            category_snapshot="Интернет",
+        )
+
+        text = render_user_addition_group_message(ticket, addition, room_context=context)
+
+        self.assertIn("➕ Дополнение от пользователя", text)
+        self.assertIn("Заявка: T-00032", text)
+        self.assertIn("Статус: новое", text)
+        self.assertIn("Объект: Номер 112 (Интернет)", text)
 
     def test_render_group_ticket_includes_internal_comment_attachment_counts(self) -> None:
         ticket = Ticket(

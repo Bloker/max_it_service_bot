@@ -394,7 +394,7 @@ class TicketClarificationService:
         if self._repository is None or not attachments:
             return
         for index, attachment in enumerate(attachments):
-            metadata = _build_attachment_metadata(
+            metadata = build_ticket_attachment_metadata(
                 attachment,
                 source=source,
                 order=index,
@@ -443,7 +443,7 @@ class TicketClarificationService:
             return []
         restored: list[Any] = []
         for record in records:
-            attachment = _restore_attachment_from_record(record)
+            attachment = restore_ticket_attachment(record)
             if attachment is not None:
                 restored.append(attachment)
         return restored
@@ -517,7 +517,7 @@ class TicketClarificationService:
         )
 
 
-def _build_attachment_metadata(
+def build_ticket_attachment_metadata(
     attachment: Any,
     *,
     source: str,
@@ -580,7 +580,7 @@ def _first_attachment_value(attachment: Any, field_names: tuple[str, ...]) -> An
     return None
 
 
-def _restore_attachment_from_record(record: TicketAttachmentRecord) -> Any | None:
+def restore_ticket_attachment(record: TicketAttachmentRecord) -> Any | None:
     """Восстанавливает AttachmentUpload, если есть reusable token."""
 
     token = record.platform_attachment_ref or record.meta.get("token")

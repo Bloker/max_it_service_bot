@@ -10,6 +10,7 @@ from app.helpdesk.services.ticket_clarification_service import (
     TicketClosingReply,
     TicketUserReply,
 )
+from app.helpdesk.services.ticket_user_addition_service import TicketUserAddition
 from app.helpdesk.texts.formatters import format_room_context_object, format_ru_phone
 
 
@@ -68,6 +69,7 @@ def render_group_ticket(
     attached_user_reply: TicketUserReply | None = None,
     closing_reply: TicketClosingReply | None = None,
     last_internal_comment: TicketInternalComment | None = None,
+    last_user_addition: TicketUserAddition | None = None,
 ) -> str:
     """Форматирует карточку заявки для группового чата IT."""
 
@@ -109,8 +111,13 @@ def render_group_ticket(
             f"{reply_author}: {reply_text}"
         )
     if closing_reply is not None:
+        closing_label = (
+            "Ответ при закрытии"
+            if ticket.status.value == "закрыто"
+            else "Предыдущий ответ при закрытии"
+        )
         blocks.append(
-            "Ответ при закрытии:\n"
+            f"{closing_label}:\n"
             f"{escape(closing_reply.card_text)}"
         )
     if last_internal_comment is not None:
@@ -127,7 +134,49 @@ def render_group_ticket(
                 lines.append(f"Файлы: {counts.document_count}")
             comment_block += "\n" + "\n".join(lines).strip()
         blocks.append(comment_block)
+    if last_user_addition is not None:
+        addition_block = (
+            "Последнее дополнение пользователя:\n"
+            f"{escape(last_user_addition.card_text)}"
+        )
+        attachments = last_user_addition.attachments or []
+        if attachments:
+            photo_count = sum(str(getattr(item, "type", "")) in {"image", "photo"} for item in attachments)
+            video_count = sum(str(getattr(item, "type", "")) == "video" for item in attachments)
+            document_count = len(attachments) - photo_count - video_count
+            lines = ["", "Вложения к дополнению:"]
+            if photo_count:
+                lines.append(f"Фото: {photo_count}")
+            if video_count:
+                lines.append(f"Видео: {video_count}")
+            if document_count:
+                lines.append(f"Файлы: {document_count}")
+            addition_block += "\n" + "\n".join(lines).strip()
+        blocks.append(addition_block)
     return "\n\n".join(blocks)
+
+
+def render_user_addition_group_message(
+    ticket: Ticket,
+    addition: TicketUserAddition,
+    *,
+    room_context: RoomTicketContext | None = None,
+) -> str:
+    """Форматирует отдельное сообщение о дополнении пользователя."""
+
+    context_line = (
+        _format_room_context_line(room_context)
+        if room_context is not None
+        else f"Категория: {escape(ticket.category)}"
+    )
+    return (
+        "<b>➕ Дополнение от пользователя</b>\n\n"
+        f"Заявка: {escape(ticket.ticket_id)}\n"
+        f"Статус: {escape(ticket.status.value)}\n"
+        f"{context_line}\n"
+        f"Пользователь: {escape(addition.user_name)}\n\n"
+        f"{escape(addition.text.strip() or 'Без текста')}"
+    )
 
 
 def render_open_tickets_list(tickets: list[Ticket], *, title: str = "Не закрытые заявки") -> str:

@@ -83,3 +83,18 @@ class TicketContextRepository(Protocol):
     ) -> TicketCommentRecord | None: ...
 
     def mark_user_reply_attached(self, group_message_id: str) -> TicketCommentRecord | None: ...
+
+    def get_comment(self, comment_id: int) -> TicketCommentRecord | None: ...
+
+    def bind_comment_target_message(
+        self,
+        comment_id: int,
+        target_message_id: str,
+    ) -> TicketCommentRecord | None: ...
+
+    def mark_comment_attached(
+        self,
+        comment_id: int,
+        *,
+        direction: str,
+    ) -> TicketCommentRecord | None: ...

@@ -1,6 +1,7 @@
 """Фабрики inline-клавиатур пользовательского и IT-меню."""
 
-from maxapi.types import ButtonsPayload, CallbackButton, RequestContactButton
+from maxapi.types import ButtonsPayload, CallbackButton, LinkButton, RequestContactButton
+from maxapi.utils.message_link import build_message_link
 
 from app.helpdesk.models.ticket import Ticket, TicketStatus
 from app.helpdesk.models.room_ticket_context import RoomTicketContext
@@ -557,6 +558,85 @@ def build_attach_user_reply_keyboard(ticket_id: str):
     ).pack()
 
 
+def build_attach_user_addition_keyboard(ticket_id: str, comment_id: int):
+    """Собирает кнопку прикрепления дополнения к основной карточке."""
+
+    return ButtonsPayload(
+        buttons=[[
+            CallbackButton(
+                text="Прикрепить к заявке",
+                payload=SpecialistTicketPayload(
+                    action=f"attach_add_{comment_id}",
+                    ticket_id=ticket_id,
+                ).pack(),
+            )
+        ]]
+    ).pack()
+
+
+def _build_ticket_link_button(*, text: str, message_id: str | None):
+    """Создаёт MAX deep link к карточке, если известен корректный mid."""
+
+    if not message_id:
+        return None
+    try:
+        return LinkButton(text=text, url=build_message_link(message_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def build_user_tickets_keyboard(
+    tickets: list[Ticket],
+    *,
+    ticket_message_ids: dict[str, str | None] | None = None,
+):
+    """Собирает список заявок пользователя с открытием карточки."""
+
+    rows = []
+    for ticket in tickets:
+        text = f"{ticket.ticket_id} · {ticket.status.value}"
+        link_button = _build_ticket_link_button(
+            text=text,
+            message_id=(ticket_message_ids or {}).get(ticket.ticket_id),
+        )
+        rows.append([
+            link_button
+            or CallbackButton(
+                text=text,
+                payload=UserMenuPayload(action="my_ticket", value=ticket.ticket_id).pack(),
+            )
+        ])
+    rows.append([CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())])
+    return ButtonsPayload(buttons=rows).pack()
+
+
+def build_user_ticket_keyboard(ticket: Ticket):
+    """Собирает действия владельца для одной заявки."""
+
+    rows: list[list[CallbackButton]] = []
+    if ticket.status != TicketStatus.CLOSED:
+        rows.append([CallbackButton(
+            text="➕ Дополнить заявку",
+            payload=UserMenuPayload(action="ticket_add", value=ticket.ticket_id).pack(),
+        )])
+    rows.extend([
+        [CallbackButton(text="← Мои обращения", payload=UserMenuPayload(action="my").pack())],
+        [CallbackButton(text="Главное меню", payload=UserMenuPayload(action="menu").pack())],
+    ])
+    return ButtonsPayload(buttons=rows).pack()
+
+
+def build_user_addition_cancel_keyboard(ticket_id: str):
+    """Собирает кнопку отмены пользовательского дополнения."""
+
+    return ButtonsPayload(buttons=[[
+        CallbackButton(
+            text="Отмена",
+            payload=UserMenuPayload(action="ticket_add_cancel", value=ticket_id).pack(),
+        )
+    ]]).pack()
+
+
 def build_ticket_actions_keyboard(
     ticket_or_id: Ticket | str,
     *,
@@ -579,7 +659,12 @@ def build_ticket_actions_keyboard(
     has_ticket_note = has_room_history
     action_rows: list[list[CallbackButton]]
     if status == TicketStatus.CLOSED:
-        action_rows = []
+        action_rows = [[
+            CallbackButton(
+                text="Открыть заявку",
+                payload=SpecialistTicketPayload(action="reopen", ticket_id=ticket_id).pack(),
+            )
+        ]]
     elif status == TicketStatus.IN_PROGRESS:
         action_rows = [
             [
@@ -608,20 +693,6 @@ def build_ticket_actions_keyboard(
                 )
             ],
         ]
-        comment_row = [
-            CallbackButton(
-                text="Комментарий",
-                payload=SpecialistTicketPayload(action="comment", ticket_id=ticket_id).pack(),
-            )
-        ]
-        if has_ticket_note:
-            comment_row.append(
-                CallbackButton(
-                    text="Заметка",
-                    payload=SpecialistTicketPayload(action="note", ticket_id=ticket_id).pack(),
-                )
-            )
-        action_rows.append(comment_row)
     elif status == TicketStatus.WAITING_USER:
         action_rows = [
             [
@@ -644,20 +715,6 @@ def build_ticket_actions_keyboard(
                 )
             ],
         ]
-        comment_row = [
-            CallbackButton(
-                text="Комментарий",
-                payload=SpecialistTicketPayload(action="comment", ticket_id=ticket_id).pack(),
-            )
-        ]
-        if has_ticket_note:
-            comment_row.append(
-                CallbackButton(
-                    text="Заметка",
-                    payload=SpecialistTicketPayload(action="note", ticket_id=ticket_id).pack(),
-                )
-            )
-        action_rows.append(comment_row)
     else:
         action_rows = [
             [
@@ -667,22 +724,15 @@ def build_ticket_actions_keyboard(
                 )
             ],
         ]
-        comment_row = [
-            CallbackButton(
-                text="Комментарий",
-                payload=SpecialistTicketPayload(action="comment", ticket_id=ticket_id).pack(),
-            )
-        ]
-        if has_ticket_note:
-            comment_row.append(
+    if has_room_history:
+        room_actions = []
+        if has_ticket_note and status != TicketStatus.CLOSED:
+            room_actions.append(
                 CallbackButton(
                     text="Заметка",
                     payload=SpecialistTicketPayload(action="note", ticket_id=ticket_id).pack(),
                 )
             )
-        action_rows.append(comment_row)
-
-    if has_room_history:
         history_button = CallbackButton(
             text="История номера",
             payload=SpecialistTicketPayload(
@@ -690,7 +740,8 @@ def build_ticket_actions_keyboard(
                 ticket_id=ticket_id,
             ).pack(),
         )
-        action_rows.append([history_button])
+        room_actions.append(history_button)
+        action_rows.append(room_actions)
 
     return ButtonsPayload(
         buttons=[
@@ -876,15 +927,25 @@ def format_kb_button_title(title: str, *, max_len: int = 36) -> str:
     return f"{normalized[: max_len - 1].rstrip()}…"
 
 
-def build_open_tickets_keyboard(tickets, *, max_buttons: int = 20):
+def build_open_tickets_keyboard(
+    tickets,
+    *,
+    ticket_message_ids: dict[str, str | None] | None = None,
+    max_buttons: int = 20,
+):
     """Собирает компактную клавиатуру открытых заявок."""
 
     rows: list[list[CallbackButton]] = []
     row: list[CallbackButton] = []
 
     for ticket in tickets[:max_buttons]:
+        link_button = _build_ticket_link_button(
+            text=ticket.ticket_id,
+            message_id=(ticket_message_ids or {}).get(ticket.ticket_id),
+        )
         row.append(
-            CallbackButton(
+            link_button
+            or CallbackButton(
                 text=ticket.ticket_id,
                 payload=SpecialistTicketPayload(
                     action="open_card",
@@ -908,6 +969,24 @@ def build_open_tickets_keyboard(tickets, *, max_buttons: int = 20):
         ]
     )
     return ButtonsPayload(buttons=rows).pack()
+
+
+def build_room_history_keyboard(
+    items,
+    *,
+    ticket_message_ids: dict[str, str | None],
+):
+    """Собирает ссылки на исходные групповые карточки из истории объекта."""
+
+    rows = []
+    for item in items:
+        link_button = _build_ticket_link_button(
+            text=item.ticket_key,
+            message_id=ticket_message_ids.get(item.ticket_key),
+        )
+        if link_button:
+            rows.append([link_button])
+    return ButtonsPayload(buttons=rows).pack() if rows else None
 
 
 def build_admin_hotel_select_keyboard(user_id: int, hotels: tuple[tuple[str, str], ...]):
